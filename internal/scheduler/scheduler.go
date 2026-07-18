@@ -159,10 +159,20 @@ func (s *Scheduler) runDeploy(deployID string) {
 	_ = s.store.CleanupService(d.Service, RetainPerService)
 }
 
+// transition moves an execution between states and immediately re-aggregates
+// the deploy row, so deploy-level status is live (not just at wave ends).
+func (s *Scheduler) transition(ex *model.Execution, from, to model.Status, errMsg string) (bool, error) {
+	ok, err := s.store.TransitionExecution(ex.ID, from, to, errMsg)
+	if ok && err == nil {
+		_, _ = s.store.RecomputeDeployStatus(ex.DeployID)
+	}
+	return ok, err
+}
+
 // runExecution drives one execution through its lifecycle. Returns the
 // digest the engine resolved (if any) and whether the execution succeeded.
 func (s *Scheduler) runExecution(ex *model.Execution, digest string) (string, bool) {
-	ok, err := s.store.TransitionExecution(ex.ID, model.StatusQueued, model.StatusDispatching, "")
+	ok, err := s.transition(ex, model.StatusQueued, model.StatusDispatching, "")
 	if err != nil || !ok {
 		return "", false
 	}
@@ -172,17 +182,17 @@ func (s *Scheduler) runExecution(ex *model.Execution, digest string) (string, bo
 		if errors.Is(err, executor.ErrUnreachable) {
 			to = model.StatusUnreachable
 		}
-		_, _ = s.store.TransitionExecution(ex.ID, model.StatusDispatching, to, err.Error())
+		_, _ = s.transition(ex, model.StatusDispatching, to, err.Error())
 		return "", false
 	}
-	ok, err = s.store.TransitionExecution(ex.ID, model.StatusDispatching, model.StatusRunning, "")
+	ok, err = s.transition(ex, model.StatusDispatching, model.StatusRunning, "")
 	if err != nil || !ok {
 		return "", false
 	}
 
 	var steps []ops.Step
 	if err := json.Unmarshal(ex.OpsJSON, &steps); err != nil {
-		_, _ = s.store.TransitionExecution(ex.ID, model.StatusRunning, model.StatusFailed, "corrupt ops snapshot: "+err.Error())
+		_, _ = s.transition(ex, model.StatusRunning, model.StatusFailed, "corrupt ops snapshot: "+err.Error())
 		return "", false
 	}
 	ctx, cancel := context.WithTimeout(s.root, time.Duration(ex.Timeout))
@@ -201,10 +211,10 @@ func (s *Scheduler) runExecution(ex *model.Execution, digest string) (string, bo
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			msg = fmt.Sprintf("timeout after %s: %s", ex.Timeout, msg)
 		}
-		_, _ = s.store.TransitionExecution(ex.ID, model.StatusRunning, model.StatusFailed, msg)
+		_, _ = s.transition(ex, model.StatusRunning, model.StatusFailed, msg)
 		return res.Digest, false
 	}
-	_, _ = s.store.TransitionExecution(ex.ID, model.StatusRunning, model.StatusSucceeded, "")
+	_, _ = s.transition(ex, model.StatusRunning, model.StatusSucceeded, "")
 	return res.Digest, true
 }
 

@@ -314,6 +314,41 @@ func TestRolloutDigestPromotion(t *testing.T) {
 	}
 }
 
+// Behavior: deploy-level status reflects execution progress live — while an
+// execution runs the deploy shows running, not queued (M1.5 finding: linkmind
+// showed queued for the whole image pull).
+func TestDeployStatusLiveDuringRun(t *testing.T) {
+	h := newHarness(t, true, 0)
+	svc := service("app", nil, `[{run: {argv: [deploy-step]}}]`)
+	d := h.enqueue(svc, "")
+	<-h.gate.notify // first op has started: the execution is running
+	if got, _ := h.store.GetDeploy(d.ID); got.Status != model.StatusRunning {
+		t.Fatalf("deploy status during execution = %s, want running", got.Status)
+	}
+	h.gate.releaseAll()
+	h.waitStatus(d.ID, model.StatusSucceeded)
+}
+
+// Behavior: in a parallel wave, one instance's failure is visible on the
+// deploy immediately, not only after the whole wave drains.
+func TestDeployStatusFailureVisibleEarly(t *testing.T) {
+	h := newHarness(t, false, 0)
+	m0 := h.fake.On("deploy-step")
+	m0.Dir = "/opt/vf-m0"
+	m0.Exit = 1
+	sg0 := h.fake.On("deploy-step")
+	sg0.Dir = "/opt/vf-sg0"
+	sg0.BlockUntilCancel = true
+
+	svc := service("vf", [][]string{{"m0", "sg0"}}, `[{run: {argv: [deploy-step]}}]`)
+	// payload digest skips the serial first-instance resolution, so the
+	// whole wave truly runs in parallel
+	d := h.enqueue(svc, `{"digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	// sg0 blocks until shutdown; only the immediate recompute on m0's
+	// failure can surface the failed status within the wait window.
+	h.waitStatus(d.ID, model.StatusFailed)
+}
+
 // Behavior: an execution exceeding the service timeout is killed and fails.
 func TestExecutionTimeout(t *testing.T) {
 	h := newHarness(t, false, 0)

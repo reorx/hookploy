@@ -2,6 +2,14 @@
 
 设计文档见 `docs/PRD.md`。开发方法论：BDD（先写行为测试再实现）。
 
+## 正式实例（ali-hk-01，M1.5 起）
+
+- 由 deploy 仓库的 `ansible/roles/hookploy` 部署（binary 上传 + `hookploy.yaml` SSOT 模板 + systemd unit + Caddy 路由），**改配置一律改 role 模板再 `ansible-playbook -i inventory.yml playbook.yml --limit ali-hk-01 --tags hookploy`**，勿手改服务器文件。
+- 目录 `/opt/apps/hookploy/`，公网入口 `https://hookploy.reorx.com`（Cloudflare 橙云 → Caddy → 127.0.0.1:9100）。
+- 进程管理：`systemctl {status,restart} hookploy`；ctl 脚本仅作无 systemd 场景兜底，勿与 systemd 并用。
+- 发布新版本：hookploy repo 里 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/hookploy-linux-amd64 ./cmd/hookploy`，然后跑上面的 playbook（role 从 `~/Code/hookploy/dist/` 上传）。
+- 试点服务：linkmind（GHA 传 digest → `image.pin` + `compose.up`）；其余服务仍走旧 adnanh/webhook，M3 全量迁移。
+
 ## 真机测试规范（ali-hk-01）
 
 测试部署与未来的正式部署**同机共存**，靠路径和端口隔离；测试部署是临时的、手动的，不进 Ansible SSOT（正式部署由 M3 的 Ansible role 负责）。

@@ -109,14 +109,21 @@ services:
       - image.pin
       - compose.up
 
-  # 形态 1 在 edge 上，完全同型，只是 server 不同
-  vocalflow-api:
-    server: tc-sg-01
-    dir: /opt/apps/vocalflow-rt
+  # ─── 形态 1 × 多实例 rollout：1 main node + 2 api nodes，一次 webhook 全量发布 ───
+  vocalflow:
     image: ghcr.io/reorx/vocalflow-rt
-    deploy:
+    dir: /opt/apps/vocalflow-rt          # 实例默认 dir，可被实例覆盖
+    deploy:                              # 所有实例共用同一条流水线
       - image.pin
       - compose.up
+      - healthcheck: { url: "http://127.0.0.1:3030/healthz" }
+    instances:
+      main:    { server: ali-hk-01 }
+      api-sg0: { server: tc-sg-01 }
+      api-hk0: { server: hh-hk-01 }
+    rollout:
+      - main                 # 波 1：main node 先行
+      - [api-sg0, api-hk0]   # 波 2：api nodes 并行，波 1 成功后开始
 
   # 形态 1 + 禁用 webhook（condenser：CD 已拆，仅允许 CLI 手动发版）
   condenser:
@@ -163,7 +170,11 @@ services:
         - compose.exec: { service: server, argv: [pnpm, db:push] }
 ```
 
-服务级字段：`server`（所在服务器）、`dir`（工作目录）、`image`（主镜像声明，供 `image.*` op 复用；未来多镜像场景协议为 `images:` 列表留位，v1 不实现）、`webhook: false`（不接受 `/hooks/` 触发，`hookploy deploy` 手动仍可用）、`deploy`（默认流水线）、`tasks`（具名任务，见下）、`timeout`（覆盖默认超时）。
+服务级字段：`server`（所在服务器）、`dir`（工作目录 / 实例默认 dir）、`image`（主镜像声明，供 `image.*` op 复用；未来多镜像场景协议为 `images:` 列表留位，v1 不实现）、`webhook: false`（不接受 `/hooks/` 触发，`hookploy deploy` 手动仍可用）、`deploy`（默认流水线）、`tasks`（具名任务，见下）、`timeout`（覆盖默认超时）、`instances`（实例表，每实例 `server` + 可选 `dir` 覆盖）、`rollout`（波次列表，见下）。
+
+### 多实例与 rollout
+
+一个服务可部署到多台服务器：`instances` 定义实例（同一条 `deploy` 流水线在每个实例的机器上执行），`rollout` 以波次列表定义发布顺序——标量 = 单实例波，列表 = 并行波，波 k 全部成功后波 k+1 才启动。`rollout` 省略时按 `instances` 声明顺序逐实例串行。单服务器服务的 `server: xxx` 写法是"单实例 + 单波"的语法糖，与 `instances` 互斥。
 
 ### Op 词汇表（v1）
 
@@ -181,6 +192,7 @@ services:
 | `compose.restart` | `docker compose restart` | `services: []` |
 | `env.require` | 断言 env 文件中指定 key 已填值，否则失败 | `file`, `keys: []` |
 | `env.write` | 向指定文件写入/更新 KEY=VALUE 行 | `file`, `set: {K: V}` |
+| `healthcheck` | 轮询 HTTP 端点直至健康或次数耗尽 | `url`（必填）, `expect: 200`, `retries: 5`, `interval: 3s` |
 | `run` | 在服务目录下执行一条命令（argv 数组，不经 shell） | `argv: []` |
 
 `run` 是逃生舱：用于 op 词汇表未覆盖的场景（如迁移期兼容现有 deploy.sh）。它依然是**配置定义**的（在 SSOT 里、经 git 审计），不破坏"payload 不能注入命令"的安全属性；但新服务应优先用类型化 op。
@@ -199,6 +211,8 @@ services:
 **`image.extract`**。`docker create` 临时容器 → `docker cp` 抽出 `from` 路径 → `<to>.new` 近原子交换（rm `to.old` → mv `to`→`to.old` → mv `to.new`→`to` → rm `to.old`）→ 删除临时容器。默认作用于服务 `image:` 锁定后的本地 `:latest`；抽取 compose 之外的镜像时显式传 `image:` 参数并配 `pull: true`。
 
 **`artifact.extract`**。下载 `url`（3 次重试）→ `sha256` 校验（**必填**：artifact 来自公网 URL，无校验等于接受任意代码）→ 按扩展名解压（v1 支持 tar.gz / zip）到 `<to>.new` → 近原子交换（与 `image.extract` 共用同一段交换逻辑）。CI 侧约定：构建产物上传到稳定可下载处（GitHub Release asset 或 OSS），payload 携带 url + sha256。
+
+**`healthcheck`**。按 `interval` 轮询 `url`，收到 `expect` 状态码即成功，`retries` 耗尽即失败。放在流水线末尾，"部署成功"的定义就从"容器起来了"升级为"服务真的健康"（能捕获起来几秒后 crash-loop 的情况）；多实例场景下，波间门控随之继承这一强度。
 
 ### 具名任务（tasks）
 
@@ -246,6 +260,13 @@ queued → dispatching → running → succeeded / failed
 - **超时**：默认 10 分钟（`defaults.timeout`，服务可覆盖）；超时由 edge 杀掉进程组并上报 failed。
 - **main 重启恢复**：任务状态落 SQLite；main 重启后 running 状态的任务标记为 failed（executor 已丢失），queued 的任务继续调度。
 
+### 多实例 rollout 语义
+
+- **一次 webhook = 一次 rollout**，内含 N 个 per-instance Execution；`deploy_id` 指向 rollout，状态机作用于每个 Execution，rollout 状态由聚合得出（全部成功 = succeeded，任一失败 = failed）。
+- **digest 在 rollout 层解析一次**：payload 带 digest 则全部实例直接用它；缺失（手动触发）时由波 1 首个实例解析 `:latest`，结果提升为整个 rollout 的 digest，后续实例按它 pin。协议保证"一次通知、全部节点、同一镜像"——否则波与波之间隔着几分钟，各实例可能 pin 到不同版本。
+- **波间门控**：波 k 全部 Execution 成功（含 pin 内置验证与 `healthcheck`）→ 波 k+1 启动；任一失败 → 后续波取消，rollout failed。**不回滚已完成的波**（与 non-goal 一致），但部分完成状态一等可见：历史与 API 中能看到逐实例的 ✓/✗，而非笼统的 failed。
+- 去重与离线语义不变：latest-wins 作用于**服务级**（两个 rollout 绝不交错部署同一批机器）；30s 重连窗口按实例生效，实例 unreachable → 所在波失败 → 后续波取消。
+
 ### 日志与历史
 
 - edge 将每个 op 的 stdout/stderr 流式回传，main 按 deploy 落库。
@@ -274,7 +295,7 @@ hookploy status [--json]                  # 总览：servers 在线状态 + serv
 hookploy deploys <service> [--json]       # 部署历史
 hookploy logs <deploy-id> [-f]            # 部署日志
 hookploy deploy <service> [--payload '{}']# 手动触发部署（等价 webhook，用于人肉/agent 操作）
-hookploy task <service> <name>            # 执行具名任务（如 simul 的 db-push）
+hookploy task <service> <name> [--instance <i>]  # 执行具名任务（多实例服务必须指明实例）
 hookploy validate [-f file]               # 配置静态校验
 hookploy schema                           # 输出 hookploy.yaml 的 JSON Schema
 
@@ -327,6 +348,7 @@ message MainMessage {
 ```
 
 - 心跳依赖 gRPC/h2 内建 keepalive；main 据此维护 servers 在线状态。
+- 多实例 rollout 的波次编排完全在 main 的调度器内完成，edge 只见单机 Execution——协议面不因多实例膨胀。
 - 版本兼容：Hello 携带 binary 版本，main 检测到 edge 版本落后时在 `hookploy status` 中标注（v1 不做自动升级）。
 
 ## 8. 为什么不用现成方案
@@ -358,7 +380,7 @@ message MainMessage {
 ## 11. 里程碑
 
 - **M1 — 单机可用**：main + 内建 local executor + webhook API + op 引擎 + SQLite 历史 + `status/deploys/logs/validate` CLI。在 ali-hk-01 上替换 adnanh/webhook，现有服务全部迁移。
-- **M2 — 主从**：gRPC 协议 + edge 角色 + server token + 离线重试 + 在线状态。tc-sg-01 以 edge 接入，vocalflow-api 的 digest 部署迁移。
+- **M2 — 主从**：gRPC 协议 + edge 角色 + server token + 离线重试 + 在线状态 + 多实例 rollout 调度。tc-sg-01 / hh-hk-01 以 edge 接入，vocalflow（1 main node + 2 api nodes）整体迁移。
 - **M3 — 收尾**：`--json` 全覆盖与输出结构冻结、JSON Schema、Ansible role（部署 main/edge）、文档、全部 GitHub Actions 切换、旧 webhook 退役。
 
 ## 12. 待确认的开放问题
@@ -367,4 +389,4 @@ message MainMessage {
 2. **日志保留策略**：每服务 50 条是否合适？
 3. **状态 API 的 admin token** 与 service token 分离，admin token 只读 + 可触发部署/任务、不可管理 token——权限切分是否够用？
 
-已裁决（2026-07-18 讨论定稿）：digest 锁定为镜像部署默认语义，`image.pin` 零参数、验证内置；静态前端走 CI artifact 而非镜像抽取（`artifact.extract`，sha256 必填）；`compose.run` 与 `compose.exec` 并存；具名任务定名 `tasks`（内部执行统一为 Execution）；去重采用 latest-wins；`webhook: false` 支持手动发版服务；`image:` v1 单值、协议为 `images:` 留位。
+已裁决（2026-07-18 讨论定稿）：digest 锁定为镜像部署默认语义，`image.pin` 零参数、验证内置；静态前端走 CI artifact 而非镜像抽取（`artifact.extract`，sha256 必填）；`compose.run` 与 `compose.exec` 并存；具名任务定名 `tasks`（内部执行统一为 Execution）；去重采用 latest-wins；`webhook: false` 支持手动发版服务；`image:` v1 单值、协议为 `images:` 留位；多实例采用服务内 `instances` + `rollout` 波次（省略 rollout = 按声明顺序逐实例串行，digest 在 rollout 层解析一次，波间门控、不回滚），否决服务间依赖链方案；`healthcheck` op 进 v1；多实例 task 需 `--instance`。

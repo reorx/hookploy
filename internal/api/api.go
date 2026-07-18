@@ -1,0 +1,143 @@
+// Package api holds the response DTOs shared by the HTTP API and the CLI's
+// --json output — both serialize exactly these types, so the two outputs are
+// identical by construction. M3 freezes this package.
+package api
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/reorx/hookploy/internal/model"
+)
+
+// Accepted is the 202 response of webhook/manual triggers.
+type Accepted struct {
+	DeployID  string `json:"deploy_id"`
+	StatusURL string `json:"status_url"`
+}
+
+// Error is the uniform error body.
+type Error struct {
+	Error string `json:"error"`
+}
+
+// Deploy is one rollout.
+type Deploy struct {
+	ID         string          `json:"id"`
+	Service    string          `json:"service"`
+	Kind       string          `json:"kind"`
+	Task       string          `json:"task,omitempty"`
+	Status     string          `json:"status"`
+	Digest     string          `json:"digest,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+	FinishedAt *time.Time      `json:"finished_at,omitempty"`
+	Executions []Execution     `json:"executions,omitempty"`
+}
+
+// Execution is one per-instance run inside a deploy.
+type Execution struct {
+	ID         string     `json:"id"`
+	Instance   string     `json:"instance"`
+	Server     string     `json:"server"`
+	Dir        string     `json:"dir"`
+	Wave       int        `json:"wave"`
+	Status     string     `json:"status"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Ops        []OpRecord `json:"ops,omitempty"`
+}
+
+// OpRecord is the timeline entry of one op.
+type OpRecord struct {
+	Index      int        `json:"index"`
+	Name       string     `json:"name"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	Error      string     `json:"error,omitempty"`
+}
+
+// LogLine is one log chunk (NDJSON in log streaming).
+type LogLine struct {
+	ExecutionID string    `json:"execution_id"`
+	OpIndex     int       `json:"op_index"`
+	Stream      string    `json:"stream"`
+	Data        string    `json:"data"`
+	At          time.Time `json:"at"`
+}
+
+// ServiceSummary is one row of GET /services.
+type ServiceSummary struct {
+	Name       string   `json:"name"`
+	Webhook    bool     `json:"webhook"`
+	Servers    []string `json:"servers"`
+	LastDeploy *Deploy  `json:"last_deploy,omitempty"`
+}
+
+// ServerInfo is one row of GET /servers.
+type ServerInfo struct {
+	Name   string `json:"name"`
+	Local  bool   `json:"local"`
+	Status string `json:"status"` // online | offline
+}
+
+// Status is the `hookploy status` overview.
+type Status struct {
+	Servers  []ServerInfo     `json:"servers"`
+	Services []ServiceSummary `json:"services"`
+}
+
+// FromDeploy converts a model deploy (optionally with executions/op records).
+func FromDeploy(d *model.Deploy, execs []*model.Execution, opsByExec map[string][]*model.OpRecord) *Deploy {
+	out := &Deploy{
+		ID:         d.ID,
+		Service:    d.Service,
+		Kind:       string(d.Kind),
+		Task:       d.Task,
+		Status:     string(d.Status),
+		Digest:     d.Digest,
+		Error:      d.Error,
+		Payload:    d.Payload,
+		CreatedAt:  d.CreatedAt,
+		FinishedAt: d.FinishedAt,
+	}
+	for _, ex := range execs {
+		e := Execution{
+			ID:         ex.ID,
+			Instance:   ex.Instance,
+			Server:     ex.Server,
+			Dir:        ex.Dir,
+			Wave:       ex.Wave,
+			Status:     string(ex.Status),
+			Error:      ex.Error,
+			StartedAt:  ex.StartedAt,
+			FinishedAt: ex.FinishedAt,
+		}
+		for _, op := range opsByExec[ex.ID] {
+			e.Ops = append(e.Ops, OpRecord{
+				Index:      op.OpIndex,
+				Name:       op.OpName,
+				StartedAt:  op.StartedAt,
+				FinishedAt: op.FinishedAt,
+				ExitCode:   op.ExitCode,
+				Error:      op.Error,
+			})
+		}
+		out.Executions = append(out.Executions, e)
+	}
+	return out
+}
+
+// FromLogLine converts a model log line.
+func FromLogLine(l *model.LogLine) LogLine {
+	return LogLine{
+		ExecutionID: l.ExecutionID,
+		OpIndex:     l.OpIndex,
+		Stream:      l.Stream,
+		Data:        l.Data,
+		At:          l.At,
+	}
+}

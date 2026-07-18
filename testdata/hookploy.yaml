@@ -1,0 +1,71 @@
+# hookploy.yaml — 全部服务定义的 SSOT（PRD §4 完整示例）
+listen:
+  http: "127.0.0.1:9100"
+  grpc: "127.0.0.1:9101"
+
+servers:
+  ali-hk-01: { local: true }
+  tc-sg-01: {}
+  hh-hk-01: {}
+
+defaults:
+  timeout: 10m
+
+services:
+  linkmind:
+    server: ali-hk-01
+    dir: /opt/apps/linkmind
+    image: ghcr.io/reorx/linkmind
+    deploy:
+      - image.pin
+      - compose.up
+
+  vocalflow:
+    image: ghcr.io/reorx/vocalflow-rt
+    dir: /opt/apps/vocalflow-rt
+    deploy:
+      - image.pin
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:3030/healthz" }
+    instances:
+      main:    { server: ali-hk-01 }
+      api-sg0: { server: tc-sg-01 }
+      api-hk0: { server: hh-hk-01 }
+    rollout:
+      - main
+      - [api-sg0, api-hk0]
+
+  condenser:
+    server: hh-hk-01
+    dir: /opt/apps/condenser
+    image: ghcr.io/reorx/condenser
+    webhook: false
+    deploy:
+      - image.pin
+      - compose.up
+
+  breeze:
+    server: ali-hk-01
+    dir: /opt/apps/breeze
+    image: ghcr.io/reorx/breeze
+    deploy:
+      - image.pin
+      - image.extract: { from: /app/static, to: static }
+      - compose.run: { service: web, argv: [python, manage.py, migrate, --noinput] }
+      - compose.up
+
+  simul:
+    server: ali-hk-01
+    dir: /opt/apps/simul
+    image: ghcr.io/reorx/simul/server
+    deploy:
+      - env.require: { file: .env, keys: [KAGI_EMAIL] }
+      - image.pin
+      - artifact.extract:
+          url: "${payload.webdist_url}"
+          sha256: "${payload.webdist_sha256}"
+          to: webdist
+      - compose.up
+    tasks:
+      db-push:
+        - compose.exec: { service: server, argv: [pnpm, db:push] }

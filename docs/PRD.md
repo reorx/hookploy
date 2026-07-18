@@ -381,7 +381,7 @@ message MainMessage {
 
 - **M1 — 单机可用**：main + 内建 local executor + webhook API + op 引擎 + SQLite 历史 + `status/deploys/logs/validate` CLI。在 ali-hk-01 上替换 adnanh/webhook，现有服务全部迁移。
 - **M2 — 主从**：gRPC 协议 + edge 角色 + server token + 离线重试 + 在线状态 + 多实例 rollout 调度。tc-sg-01 / hh-hk-01 以 edge 接入，vocalflow（1 main node + 2 api nodes）整体迁移。
-- **M3 — 收尾**：`--json` 全覆盖与输出结构冻结、JSON Schema、Ansible role（部署 main/edge）、文档、全部 GitHub Actions 切换、旧 webhook 退役。
+- **M3 — 收尾**：`--json` 全覆盖与输出结构冻结、JSON Schema、Ansible role（部署 main/edge，含 systemd unit）、发布产物打包（binary + `hookploy-ctl.sh` 控制脚本，覆盖无 systemd 场景与手动运维）、文档、全部 GitHub Actions 切换、旧 webhook 退役。
 
 ## 12. 待确认的开放问题
 

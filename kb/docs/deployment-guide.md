@@ -159,6 +159,11 @@ hookploy.example.com {
 
 （hookploy 自身不管证书；gRPC keepalive 双向探活，死连接约 40s 内检出。）
 
+⚠️ **域名走 Cloudflare 橙云代理时，gRPC 默认被 CF 掐死**（2026-07-19 生产接入实测）：zone 的 **Network → gRPC 开关**不开，edge 的 handshake 一律 `Internal: server closed the stream without sending trailers`，请求根本到不了源站 Caddy——这不是 Caddy 配置问题，先查 CF。绕行选项（当前生产在用第二种）：
+
+1. 开 CF zone 的 gRPC 开关（面板 Network 页），保持上面的单域名 443 方案；
+2. **明文 h2c 直连源站 IP 上一个已放行的端口**：`edge --main http://<源站IP>:<port>`，该端口的 Caddy 监听须声明 `servers :<port> { protocols h1 h2c }`（全局选项）再用 `@grpc protocol grpc` 分流到 9101。server token 会明文过网线，风险自行评估（reorx 生产：复用 vocalflow 心跳的 3031 明文口，pre-launch 接受）。
+
 ### 4.4 edge 的进程管理
 
 - systemd（M3 role 提供 unit）：`Restart=always` 即可，edge 自带重连，进程本身极少退出。
@@ -233,11 +238,13 @@ reload 失败时 main 保留旧配置继续运行；in-flight 的执行永远用
 | webhook 401/403 | service token 错误或被轮换；`webhook: false` 的服务只接受 CLI 手动触发 |
 | 部署被顶掉（`superseded`） | 正常：同服务排队时 latest-wins，连推 N 个 commit 最多执行 2 次部署 |
 
-## 8. 当前实例与迁移状态（2026-07 快照）
+## 8. 当前实例与迁移状态（2026-07-19 快照）
 
-- 正式 main：ali-hk-01 `/opt/apps/hookploy/`（9100/9101），`https://hookploy.reorx.com`，由 deploy 仓库 `ansible/roles/hookploy` 部署；试点服务 linkmind。
+- 正式 main：ali-hk-01 `/opt/apps/hookploy/`（9100/9101），`https://hookploy.reorx.com`，由 deploy 仓库 `ansible/roles/hookploy` 部署；admin token 在同目录 `.admin_token`（0600）。
+- 正式 edge：tc-sg-01 / hh-hk-01（deploy 仓库 `ansible/roles/hookploy-edge`：binary + systemd `hookploy-edge` + `edge.env` 骨架），2026-07-19 上线。gRPC 走明文 3031 直连 ali（CF 橙云吃 gRPC，见 §4.3 ⚠️；zone 开关打开后切回 443）。
+- 已接管服务：linkmind（单机）、**vocalflow-rt**（多实例 rollout：波 1 main@ali → 波 2 api-hk0@hh + api-sg0@tc 并行；2026-07-19 真实 push 发布验证通过，digest `5ee994ea` 三实例对齐 + 三路实时转录冒烟绿）。
 - 真机测试环境：同机 `/opt/apps/hookploy_test/`（9180/9181），含一个模拟 edge（`edge-01`），规范见仓库 `CLAUDE.md`。
-- M3 待办：edge 的 Ansible role（tc-sg-01 / hh-hk-01 接入）、vocalflow 迁移、全部 GHA 切换、旧 adnanh/webhook 退役。
+- M3 剩余：其余 GHA 服务切换（breeze / simul / panplayer…，多镜像 app 的拷 static 步骤需 op 支持或 `run` 逃生舱）、旧 adnanh/webhook 退役。
 
 ## 附：op 词汇表速查
 

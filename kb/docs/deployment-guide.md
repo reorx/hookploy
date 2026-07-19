@@ -239,9 +239,9 @@ reload 失败时 main 保留旧配置继续运行；in-flight 的执行永远用
 
 - 正式 main：ali-hk-01 `/opt/apps/hookploy/`（9100/9101），`https://hookploy.reorx.com`，由 deploy 仓库 `ansible/roles/hookploy` 部署；admin token 在同目录 `.admin_token`（0600）。
 - 正式 edge：tc-sg-01 / hh-hk-01（deploy 仓库 `ansible/roles/hookploy-edge`：binary + systemd `hookploy-edge` + `edge.env` 骨架），2026-07-19 上线。gRPC 与 HTTP 同走 `https://hookploy.reorx.com`（CF zone 的 Network→gRPC 开关已开——它必须保持开启，见 §4.3 ⚠️）。
-- 已接管服务：linkmind（单机）、**vocalflow-rt**（多实例 rollout：波 1 main@ali → 波 2 api-hk0@hh + api-sg0@tc 并行；2026-07-19 真实 push 发布验证通过，digest `5ee994ea` 三实例对齐 + 三路实时转录冒烟绿）。
+- 已接管服务（**M3 全量完成，2026-07-19 之二**）：linkmind（单机）、**vocalflow-rt**（多实例 rollout：波 1 main@ali → 波 2 api-hk0@hh + api-sg0@tc 并行；真实 push 发布验证通过）、**breeze**（形态 2：pin → extract static → compose.run migrate → up）、**simul**（形态 1 + env.require 守卫 + `db-push` 具名任务；web 已迁 CF Workers，webdist 抽取需求消失）、**condenser**（hh edge，07-17 拆掉的 CD 借 edge 恢复）、**panplayer**（hh edge；ansible 同日接管其 compose，`:master`→`:latest` 配合 retag pin）。全部 e2e push 发布验证绿。不接入：nce-class（现场 git build 无镜像）、listmonk（上游钉 tag 走 ansible）、ideachat（观望）、txtrr（全 CF）。
 - 真机测试环境：同机 `/opt/apps/hookploy_test/`（9180/9181），含一个模拟 edge（`edge-01`），规范见仓库 `CLAUDE.md`。
-- M3 剩余：其余 GHA 服务切换（breeze / simul / panplayer…，多镜像 app 的拷 static 步骤需 op 支持或 `run` 逃生舱）、旧 adnanh/webhook 退役。
+- M3 剩余：仅旧 adnanh/webhook 退役（deploy 仓库侧决定观察一段时间后拆；已无 CI 调用方）。运维注意：deploy 仓库 group_vars 的 `hookploy_binary_src` 指向本 repo `dist/hookploy-linux-amd64`——dist 清空时 ansible 的 hookploy/hookploy-edge tag 会失败（2026-07-19 实碰），发布 binary 前先构建。生产三台现跑 clean `v0.1.0-5-g9ae944f`。
 
 ## 附：op 词汇表速查
 

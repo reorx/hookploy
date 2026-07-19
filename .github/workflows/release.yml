@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X github.com/reorx/hookploy/internal/version.Version=${VERSION}"
+          for target in darwin/arm64 linux/amd64; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            outdir="dist/hookploy-${VERSION}-${GOOS}-${GOARCH}"
+            mkdir -p "$outdir"
+            GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$outdir/hookploy" ./cmd/hookploy
+            install -m 0755 scripts/hookploy-ctl.sh "$outdir/hookploy-ctl.sh"
+            tar -C dist -czf "${outdir}.tar.gz" "$(basename "$outdir")"
+          done
+          (cd dist && sha256sum ./*.tar.gz > checksums.txt)
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt \
+            --title "hookploy ${GITHUB_REF_NAME}" \
+            --generate-notes

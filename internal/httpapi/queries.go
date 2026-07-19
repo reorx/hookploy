@@ -7,6 +7,7 @@ import (
 	"github.com/reorx/hookploy/internal/api"
 	"github.com/reorx/hookploy/internal/model"
 	"github.com/reorx/hookploy/internal/scheduler"
+	"github.com/reorx/hookploy/internal/version"
 )
 
 func (s *Server) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
@@ -155,19 +156,29 @@ func (s *Server) handleServiceDeploys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleServers reports each server's connectivity. M1: local servers are
-// online by definition (they are this process); remote ones are offline
-// until M2 brings edges.
+// handleServers reports each server's connectivity: local servers are online
+// by definition (they are this process); remote ones are online while their
+// edge session is connected.
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Config()
+	edges := map[string]model.EdgeInfo{}
+	if s.Edges != nil {
+		edges = s.Edges()
+	}
 	out := []api.ServerInfo{}
 	for _, name := range sortedServerNames(cfg) {
 		srv := cfg.Servers[name]
-		status := "offline"
+		row := api.ServerInfo{Name: name, Local: srv.Local, Status: "offline"}
 		if srv.Local {
-			status = "online"
+			row.Status = "online"
+			row.Version = version.Version
+		} else if info, ok := edges[name]; ok {
+			row.Status = "online"
+			row.Version = info.Version
+			at := info.ConnectedAt
+			row.ConnectedAt = &at
 		}
-		out = append(out, api.ServerInfo{Name: name, Local: srv.Local, Status: status})
+		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

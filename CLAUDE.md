@@ -27,6 +27,7 @@
 ### 路径约定
 
 - `/opt/apps/hookploy_test/` — 测试二进制 `hookploy`、控制脚本 `hookploy-ctl.sh`、`hookploy.yaml`、`hookploy.db`、`hookploy.pid`、`main.log`、`.echo_token`、`.admin_token`（token 文件 0600）
+- M2 起同目录还跑一个 edge 进程（server 名 `edge-01`，模拟远程服务器走 gRPC 全链路）：`edge.pid`、`edge.log`、`.edge_main`（main 的 gRPC URL，测试为 `http://127.0.0.1:9181`）、`.server_token`（`./hookploy server token create edge-01 -f hookploy.yaml` 生成）；ctl 命令为 `edge-start / edge-stop / edge-status / edge-restart / edge-logs [-f]`
 - `/opt/apps/echo_server/` — 测试服务，`docker-compose.yml` 跑 `traefik/whoami`（127.0.0.1:9190→80），流水线：`compose.pull` → `compose.up` → `healthcheck`
 
 本地侧的配置源文件在 `deploy-test/`（hookploy.yaml、docker-compose.yml、watch-status.sh 状态采样脚本），改动后 scp 覆盖服务器对应文件。
@@ -35,9 +36,11 @@
 
 ```sh
 go test ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o tmp/hookploy-linux-amd64 ./cmd/hookploy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -X github.com/reorx/hookploy/internal/version.Version=<ver>' -o tmp/hookploy-linux-amd64 ./cmd/hookploy
 scp tmp/hookploy-linux-amd64 ali-hk-01:/opt/apps/hookploy_test/hookploy
 ```
+
+上传前先 `hookploy-ctl.sh stop`（以及 `edge-stop`），否则覆盖运行中的二进制会报 text file busy。proto 改动后用 `scripts/genproto.sh` 重新生成 `internal/pb`（需要 protoc + protoc-gen-go + protoc-gen-go-grpc）。
 
 改动控制脚本后同样 scp：`scp scripts/hookploy-ctl.sh ali-hk-01:/opt/apps/hookploy_test/hookploy-ctl.sh`
 

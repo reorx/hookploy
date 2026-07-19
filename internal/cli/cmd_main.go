@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,10 +14,15 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
+
 	"github.com/reorx/hookploy/internal/config"
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
+	"github.com/reorx/hookploy/internal/grpcapi"
 	"github.com/reorx/hookploy/internal/httpapi"
+	"github.com/reorx/hookploy/internal/pb"
 	"github.com/reorx/hookploy/internal/runner"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/store"
@@ -81,18 +87,49 @@ func cmdMain(ctx *Context, args []string) int {
 		return nil
 	}
 
+	grpcSrv := &grpcapi.Server{
+		Store:    st,
+		Registry: reg,
+		Config:   func() *config.Config { return cfgVal.Load() },
+		Logger:   logger,
+	}
 	apiSrv := &httpapi.Server{
 		Store:  st,
 		Sched:  sched,
 		Config: func() *config.Config { return cfgVal.Load() },
 		Reload: reload,
+		Edges:  grpcSrv.Edges,
 	}
 	httpServer := &http.Server{Addr: cfg.Listen.HTTP, Handler: apiSrv.Handler()}
 
+	// gRPC listener for edges (h2c; Caddy terminates TLS in front). The
+	// keepalive pair detects dead edge connections within ~40s.
+	grpcServer := grpc.NewServer(
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
+	pb.RegisterHookployServer(grpcServer, grpcSrv)
+	grpcLis, err := net.Listen("tcp", cfg.Listen.GRPC)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "grpc listen: %v\n", err)
+		return 1
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Printf("hookploy main listening on http://%s (db: %s)", cfg.Listen.HTTP, cfg.DB)
+		logger.Printf("hookploy main listening on http://%s grpc://%s (db: %s)", cfg.Listen.HTTP, cfg.Listen.GRPC, cfg.DB)
 		errCh <- httpServer.ListenAndServe()
+	}()
+	go func() {
+		if err := grpcServer.Serve(grpcLis); err != nil {
+			logger.Printf("grpc: %v", err)
+		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)
@@ -116,6 +153,7 @@ func cmdMain(ctx *Context, args []string) int {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = httpServer.Shutdown(shutdownCtx)
 			cancel()
+			grpcServer.Stop()
 			sched.Shutdown()
 			logger.Printf("bye")
 			return 0

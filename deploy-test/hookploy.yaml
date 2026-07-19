@@ -6,6 +6,8 @@ listen:
 
 servers:
   ali-hk-01: { local: true }
+  # M2 测试：同机跑一个 edge 进程模拟远程服务器，走 gRPC 全链路
+  edge-01: {}
 
 defaults:
   timeout: 5m
@@ -18,3 +20,26 @@ services:
       - compose.pull
       - compose.up
       - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+
+  # 与 echo_server 同目录同容器，但调度到 edge-01（经 gRPC 下发执行）
+  echo_edge:
+    server: edge-01
+    dir: /opt/apps/echo_server
+    deploy:
+      - compose.pull
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+
+  # 多实例混合 rollout：wave 1 本机（local executor）→ wave 2 edge（gRPC）
+  echo_multi:
+    dir: /opt/apps/echo_server
+    deploy:
+      - compose.pull
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+    instances:
+      main: { server: ali-hk-01 }
+      edge: { server: edge-01 }
+    rollout:
+      - main
+      - edge

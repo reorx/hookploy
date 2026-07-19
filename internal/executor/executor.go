@@ -58,10 +58,13 @@ func (r *Registry) Register(server string, ex Executor) {
 	r.mu.Unlock()
 }
 
-// Unregister removes a server's executor (edge disconnect).
-func (r *Registry) Unregister(server string) {
+// Unregister removes a server's executor if it is still ex (edge
+// disconnect). A stale session closing must not knock out its replacement.
+func (r *Registry) Unregister(server string, ex Executor) {
 	r.mu.Lock()
-	delete(r.current, server)
+	if r.current[server] == ex {
+		delete(r.current, server)
+	}
 	r.mu.Unlock()
 }
 

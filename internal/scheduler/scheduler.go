@@ -123,7 +123,7 @@ func (s *Scheduler) runDeploy(deployID string) {
 		// the whole rollout, so every node pins the same image.
 		if digest == "" {
 			first := wave[0]
-			resolved, ok := s.runExecution(first, digest)
+			resolved, ok := s.runExecution(first, string(d.Kind), digest)
 			if resolved != "" && resolved != digest {
 				digest = resolved
 				_ = s.store.SetDeployDigest(deployID, digest)
@@ -140,7 +140,7 @@ func (s *Scheduler) runDeploy(deployID string) {
 				wg.Add(1)
 				go func(ex *model.Execution) {
 					defer wg.Done()
-					if _, ok := s.runExecution(ex, digest); !ok {
+					if _, ok := s.runExecution(ex, string(d.Kind), digest); !ok {
 						mu.Lock()
 						failed = true
 						mu.Unlock()
@@ -171,7 +171,7 @@ func (s *Scheduler) transition(ex *model.Execution, from, to model.Status, errMs
 
 // runExecution drives one execution through its lifecycle. Returns the
 // digest the engine resolved (if any) and whether the execution succeeded.
-func (s *Scheduler) runExecution(ex *model.Execution, digest string) (string, bool) {
+func (s *Scheduler) runExecution(ex *model.Execution, kind, digest string) (string, bool) {
 	ok, err := s.transition(ex, model.StatusQueued, model.StatusDispatching, "")
 	if err != nil || !ok {
 		return "", false
@@ -199,11 +199,13 @@ func (s *Scheduler) runExecution(ex *model.Execution, digest string) (string, bo
 	defer cancel()
 	res, err := exec.Execute(ctx, engine.Spec{
 		ExecutionID: ex.ID,
+		Kind:        kind,
 		Service:     ex.Service,
 		Instance:    ex.Instance,
 		Dir:         ex.Dir,
 		Image:       ex.Image,
 		Digest:      digest,
+		Timeout:     time.Duration(ex.Timeout),
 		Steps:       steps,
 	}, &storeSink{store: s.store, execID: ex.ID})
 	if err != nil {

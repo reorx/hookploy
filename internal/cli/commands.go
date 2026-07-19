@@ -2,6 +2,7 @@ package cli
 
 func init() {
 	register(&command{Name: "main", Summary: "run the main process (webhook + scheduler + API)", Run: cmdMain})
+	register(&command{Name: "edge", Summary: "run the edge executor (connects out to main)", Run: cmdEdge})
 	register(&command{Name: "validate", Summary: "statically validate hookploy.yaml", Run: cmdValidate})
 	register(&command{Name: "status", Summary: "overview: servers and latest deploy per service", Run: cmdStatus})
 	register(&command{Name: "deploys", Summary: "deploy history of a service", Run: cmdDeploys})

@@ -1,0 +1,97 @@
+// Hookploy main <-> edge protocol (PRD §7). One bidirectional stream; the
+// edge is the client and dials out, so edges need no inbound port.
+syntax = "proto3";
+
+package hookploy.v1;
+
+option go_package = "github.com/reorx/hookploy/internal/pb;pb";
+
+service Hookploy {
+  rpc Session(stream EdgeMessage) returns (stream MainMessage);
+}
+
+// edge → main
+message EdgeMessage {
+  oneof msg {
+    Hello hello = 1;
+    ExecUpdate update = 2;
+  }
+}
+
+// Hello is the first message of a session: the edge authenticates itself.
+// The server name is derived from the token's subject (edges are zero-config:
+// --main + --token only); when `server` is set it must match that subject.
+// Anything else as first message closes the stream.
+message Hello {
+  string server = 1;  // optional identity assertion
+  string token = 2;   // plaintext server token (hps_...)
+  string version = 3; // edge binary version
+}
+
+// ExecUpdate streams execution progress back to main.
+message ExecUpdate {
+  string execution_id = 1;
+  oneof event {
+    OpStart op_start = 2;
+    OpEnd op_end = 3;
+    LogChunk log = 4;
+    ExecDone done = 5;
+  }
+}
+
+message OpStart {
+  int32 index = 1;
+  string name = 2;
+}
+
+message OpEnd {
+  int32 index = 1;
+  string name = 2;
+  optional int32 exit_code = 3;
+  string error = 4;
+}
+
+message LogChunk {
+  int32 index = 1;
+  string stream = 2; // stdout | stderr | system
+  bytes data = 3;
+}
+
+// ExecDone is the terminal update of one execution.
+message ExecDone {
+  bool ok = 1;
+  string error = 2;
+  string digest = 3; // digest the engine pinned (rollout promotion on wave 1)
+}
+
+// main → edge
+message MainMessage {
+  oneof msg {
+    HelloAck ack = 1;
+    Execution exec = 2;
+    CancelExec cancel = 3; // reserved, not implemented in v1
+  }
+}
+
+message HelloAck {
+  string main_version = 1;
+  string server = 2; // the server name main resolved from the token
+}
+
+// Execution carries everything the edge needs: the edge is stateless, ops
+// arrive fully interpolated as the same JSON snapshot main persists.
+message Execution {
+  string execution_id = 1;
+  string kind = 2; // deploy | task
+  string service = 3;
+  string instance = 4;
+  string dir = 5;
+  string image = 6;   // service image declaration, "" if none
+  string digest = 7;  // rollout-resolved digest, "" = resolve from :latest
+  bytes ops_json = 8; // []ops.Step JSON
+  int64 timeout_ms = 9;
+}
+
+message CancelExec {
+  string execution_id = 1;
+}

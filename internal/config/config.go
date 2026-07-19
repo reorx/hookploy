@@ -100,6 +100,9 @@ func parse(data []byte) (*Config, error) {
 	if cfg.Listen.HTTP == "" {
 		cfg.Listen.HTTP = "127.0.0.1:9100"
 	}
+	if cfg.Listen.GRPC == "" {
+		cfg.Listen.GRPC = "127.0.0.1:9101"
+	}
 	if raw.Defaults.Timeout != 0 {
 		cfg.DefaultTimeout = time.Duration(raw.Defaults.Timeout)
 	}

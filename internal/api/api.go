@@ -79,9 +79,11 @@ type ServiceSummary struct {
 
 // ServerInfo is one row of GET /servers.
 type ServerInfo struct {
-	Name   string `json:"name"`
-	Local  bool   `json:"local"`
-	Status string `json:"status"` // online | offline
+	Name        string     `json:"name"`
+	Local       bool       `json:"local"`
+	Status      string     `json:"status"`                 // online | offline
+	Version     string     `json:"version,omitempty"`      // edge binary version (edges only)
+	ConnectedAt *time.Time `json:"connected_at,omitempty"` // edge session start (edges only)
 }
 
 // Status is the `hookploy status` overview.

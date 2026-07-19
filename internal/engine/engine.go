@@ -34,11 +34,13 @@ type Sink interface {
 // Spec is one execution: the interpolated snapshot plus its target context.
 type Spec struct {
 	ExecutionID string
+	Kind        string // deploy | task
 	Service     string
 	Instance    string
 	Dir         string
 	Image       string // service image: declaration, "" if none
 	Digest      string // rollout-resolved digest; "" = resolve from :latest
+	Timeout     time.Duration
 	Steps       []ops.Step
 }
 

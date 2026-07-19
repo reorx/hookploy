@@ -126,6 +126,13 @@ func AggregateStatus(statuses []Status) Status {
 	return StatusRunning
 }
 
+// EdgeInfo is the live state of one connected edge session.
+type EdgeInfo struct {
+	Server      string
+	Version     string
+	ConnectedAt time.Time
+}
+
 // NewDeployID returns a fresh dp_ id.
 func NewDeployID() string { return newID("dp_") }
 

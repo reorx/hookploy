@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/reorx/hookploy/internal/config"
+	"github.com/reorx/hookploy/internal/model"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/store"
 	"github.com/reorx/hookploy/internal/token"
@@ -25,6 +26,8 @@ type Server struct {
 	Sched  *scheduler.Scheduler
 	Config func() *config.Config
 	Reload func() error
+	// Edges reports currently connected edge sessions (nil in M1 setups).
+	Edges func() map[string]model.EdgeInfo
 }
 
 // Handler builds the routing table.

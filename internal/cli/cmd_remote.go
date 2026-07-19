@@ -55,13 +55,29 @@ func cmdStatus(ctx *Context, args []string) int {
 		enc.Encode(api.Status{Servers: servers, Services: services})
 		return 0
 	}
+	mainVersion := ""
+	for _, s := range servers {
+		if s.Local {
+			mainVersion = s.Version
+		}
+	}
 	fmt.Fprintln(ctx.Stdout, "SERVERS")
 	for _, s := range servers {
 		kind := "edge"
 		if s.Local {
 			kind = "local"
 		}
-		fmt.Fprintf(ctx.Stdout, "  %-16s %-6s %s\n", s.Name, kind, s.Status)
+		extra := ""
+		if s.Version != "" {
+			extra = "  " + s.Version
+			if !s.Local && mainVersion != "" && s.Version != mainVersion {
+				extra += " (outdated)"
+			}
+		}
+		if s.ConnectedAt != nil {
+			extra += fmt.Sprintf("  connected %s", humanAge(*s.ConnectedAt))
+		}
+		fmt.Fprintf(ctx.Stdout, "  %-16s %-6s %s%s\n", s.Name, kind, s.Status, extra)
 	}
 	fmt.Fprintln(ctx.Stdout, "SERVICES")
 	for _, s := range services {

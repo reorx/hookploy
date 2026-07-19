@@ -1,0 +1,8 @@
+# echo_server — hookploy 真机测试用的最小服务
+services:
+  echo:
+    image: traefik/whoami:latest
+    container_name: echo_server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9190:80"

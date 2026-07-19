@@ -1,0 +1,20 @@
+# hookploy 真机测试配置（ali-hk-01）
+# 端口刻意避开默认值（9100/9101），与未来正式部署共存
+listen:
+  http: "127.0.0.1:9180"
+  grpc: "127.0.0.1:9181"
+
+servers:
+  ali-hk-01: { local: true }
+
+defaults:
+  timeout: 5m
+
+services:
+  echo_server:
+    server: ali-hk-01
+    dir: /opt/apps/echo_server
+    deploy:
+      - compose.pull
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }

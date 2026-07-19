@@ -29,7 +29,7 @@
 - `/opt/apps/hookploy_test/` — 测试二进制 `hookploy`、控制脚本 `hookploy-ctl.sh`、`hookploy.yaml`、`hookploy.db`、`hookploy.pid`、`main.log`、`.echo_token`、`.admin_token`（token 文件 0600）
 - `/opt/apps/echo_server/` — 测试服务，`docker-compose.yml` 跑 `traefik/whoami`（127.0.0.1:9190→80），流水线：`compose.pull` → `compose.up` → `healthcheck`
 
-本地侧的配置源文件在 `tmp/deploy-test/`（hookploy.yaml、docker-compose.yml），改动后 scp 覆盖服务器对应文件。
+本地侧的配置源文件在 `deploy-test/`（hookploy.yaml、docker-compose.yml、watch-status.sh 状态采样脚本），改动后 scp 覆盖服务器对应文件。
 
 ### 构建与上传
 

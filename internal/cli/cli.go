@@ -46,6 +46,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	if args[0] == "--version" || args[0] == "-v" {
+		args[0] = "version"
+	}
 	c := find(args[0])
 	if c == nil {
 		fmt.Fprintf(stderr, "hookploy: unknown command %q\nRun 'hookploy --help' for usage.\n", args[0])

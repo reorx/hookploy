@@ -1,0 +1,2 @@
+services:
+  a: { server: ghost, dir: /a, deploy: [compose.up] }

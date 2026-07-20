@@ -1,6 +1,13 @@
 // Package api holds the response DTOs shared by the HTTP API and the CLI's
 // --json output — both serialize exactly these types, so the two outputs are
-// identical by construction. M3 freezes this package.
+// identical by construction. It also holds the DTOs of CLI-only local
+// commands (version/validate/token), which have no HTTP counterpart but share
+// the same freeze guarantee.
+//
+// M3 freezes this package: fields are add-only. New fields must be optional
+// (omitempty); renaming, deleting or retyping an existing field is a breaking
+// change and is forbidden. The NDJSON frame formats (LogLine, LogDone,
+// FollowFrame) are under the same constraint.
 package api
 
 import (
@@ -69,6 +76,22 @@ type LogLine struct {
 	At          time.Time `json:"at"`
 }
 
+// LogDone is the final NDJSON frame of a log follow stream, emitted once the
+// deploy settles.
+type LogDone struct {
+	Done   bool   `json:"done"`
+	Status string `json:"status"`
+}
+
+// FollowFrame is the consumer-side view of one NDJSON frame in a follow
+// stream: either a LogLine or the terminal LogDone. Done tells them apart.
+// Both are embedded rather than copied field by field, so a field added to
+// either one is decodable here without a second edit.
+type FollowFrame struct {
+	LogLine
+	LogDone
+}
+
 // ServiceSummary is one row of GET /services.
 type ServiceSummary struct {
 	Name       string   `json:"name"`
@@ -90,6 +113,37 @@ type ServerInfo struct {
 type Status struct {
 	Servers  []ServerInfo     `json:"servers"`
 	Services []ServiceSummary `json:"services"`
+}
+
+// VersionInfo is `hookploy version --json`.
+type VersionInfo struct {
+	Version string `json:"version"`
+}
+
+// ValidateResult is `hookploy validate --json`. On failure OK is false and
+// Error carries the reason; the process still exits 1.
+type ValidateResult struct {
+	OK       bool   `json:"ok"`
+	Servers  int    `json:"servers"`
+	Services int    `json:"services"`
+	Error    string `json:"error,omitempty"`
+}
+
+// TokenCreated is the --json form of the token create/rotate commands. Token
+// is the plaintext secret — main never stores or prints it again, so this is
+// the only chance to capture it.
+type TokenCreated struct {
+	Kind    string `json:"kind"` // service | server | admin
+	Subject string `json:"subject"`
+	Token   string `json:"token"`
+}
+
+// TokenRevoked is the --json form of `token revoke`. Revoked is false when
+// the subject had no valid token left to revoke.
+type TokenRevoked struct {
+	Kind    string `json:"kind"` // service | server | admin
+	Subject string `json:"subject"`
+	Revoked bool   `json:"revoked"`
 }
 
 // FromDeploy converts a model deploy (optionally with executions/op records).

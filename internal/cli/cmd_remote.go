@@ -50,9 +50,9 @@ func cmdStatus(ctx *Context, args []string) int {
 		return fail(ctx, err)
 	}
 	if *asJSON {
-		enc := json.NewEncoder(ctx.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(api.Status{Servers: servers, Services: services})
+		if err := printJSON(ctx, api.Status{Servers: servers, Services: services}); err != nil {
+			return jsonWriteFail(ctx, err)
+		}
 		return 0
 	}
 	mainVersion := ""
@@ -115,7 +115,9 @@ func cmdDeploys(ctx *Context, args []string) int {
 		return fail(ctx, err)
 	}
 	if *asJSON {
-		ctx.Stdout.Write(raw)
+		if _, err := ctx.Stdout.Write(raw); err != nil {
+			return jsonWriteFail(ctx, err)
+		}
 		return 0
 	}
 	for _, d := range deploys {
@@ -162,11 +164,7 @@ func cmdLogs(ctx *Context, args []string) int {
 		if *asJSON {
 			fmt.Fprintln(ctx.Stdout, sc.Text())
 		}
-		var probe struct {
-			Done   bool   `json:"done"`
-			Status string `json:"status"`
-			Data   string `json:"data"`
-		}
+		var probe api.FollowFrame
 		if err := json.Unmarshal(sc.Bytes(), &probe); err != nil {
 			continue
 		}
@@ -247,7 +245,9 @@ func payloadBytes(s string) []byte {
 
 func printAccepted(ctx *Context, acc *api.Accepted, raw []byte, asJSON bool) int {
 	if asJSON {
-		ctx.Stdout.Write(raw)
+		if _, err := ctx.Stdout.Write(raw); err != nil {
+			return jsonWriteFail(ctx, err)
+		}
 		return 0
 	}
 	fmt.Fprintf(ctx.Stdout, "accepted: %s\nfollow with: hookploy logs %s -f\n", acc.DeployID, acc.DeployID)

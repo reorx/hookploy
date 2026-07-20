@@ -20,5 +20,6 @@ func init() {
 	register(&command{Name: "admin-token", Summary: "manage admin tokens (create)", Sub: map[string]*command{
 		"create": {Name: "create", Run: cmdAdminTokenCreate},
 	}})
+	register(&command{Name: "schema", Summary: "print the JSON Schema of hookploy.yaml", Run: cmdSchema})
 	register(&command{Name: "version", Summary: "print the hookploy version", Run: cmdVersion})
 }

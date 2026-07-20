@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -91,6 +92,23 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, bool) {
 		}
 	}
 	return positional, true
+}
+
+// printJSON writes v as indented JSON to stdout — the --json form of the
+// local commands, whose DTOs live in internal/api just like the remote ones.
+// The write error is returned rather than swallowed: `token create` prints its
+// plaintext exactly once, so a lost write is a lost secret.
+func printJSON(ctx *Context, v any) error {
+	enc := json.NewEncoder(ctx.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+// jsonWriteFail reports a failed --json write. stdout may be a closed pipe or
+// a full disk; exiting 0 would claim success for output nobody received.
+func jsonWriteFail(ctx *Context, err error) int {
+	fmt.Fprintf(ctx.Stderr, "error: writing JSON output: %v\n", err)
+	return 1
 }
 
 func printUsage(w io.Writer) {

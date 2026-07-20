@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/reorx/hookploy/internal/api"
 	"github.com/reorx/hookploy/internal/store"
 	"github.com/reorx/hookploy/internal/token"
 )
@@ -103,5 +105,68 @@ func TestServerAndAdminTokens(t *testing.T) {
 	code, out, _ = runCLI(t, "admin-token", "create", "-f", cfg)
 	if code != 0 || !strings.HasPrefix(strings.TrimSpace(out), "hpa_") {
 		t.Fatalf("admin token: exit %d out %q", code, out)
+	}
+}
+
+// Behavior: every token command takes --json and emits api.TokenCreated /
+// api.TokenRevoked, carrying the same plaintext the text form prints.
+func TestTokenCommandsJSON(t *testing.T) {
+	dir, cfg := writeConfig(t)
+
+	created := func(args ...string) api.TokenCreated {
+		t.Helper()
+		code, out, errOut := runCLI(t, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, errOut)
+		}
+		var tc api.TokenCreated
+		if err := json.Unmarshal([]byte(out), &tc); err != nil {
+			t.Fatalf("%v: must decode as api.TokenCreated: %v\n%s", args, err, out)
+		}
+		return tc
+	}
+
+	s, err := store.Open(filepath.Join(dir, "hookploy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	tc := created("token", "create", "linkmind", "-f", cfg, "--json")
+	if tc.Kind != "service" || tc.Subject != "linkmind" || !strings.HasPrefix(tc.Token, "hpt_") {
+		t.Fatalf("create: %+v", tc)
+	}
+	if rec, _ := s.LookupToken(token.Hash(tc.Token)); rec == nil || rec.Subject != "linkmind" {
+		t.Fatalf("token from --json must be usable: %+v", rec)
+	}
+
+	rot := created("token", "rotate", "linkmind", "-f", cfg, "--json")
+	if rot.Kind != "service" || rot.Subject != "linkmind" || rot.Token == tc.Token {
+		t.Fatalf("rotate: %+v", rot)
+	}
+
+	code, out, errOut := runCLI(t, "token", "revoke", "linkmind", "-f", cfg, "--json")
+	if code != 0 {
+		t.Fatalf("revoke: exit %d: %s", code, errOut)
+	}
+	var rev api.TokenRevoked
+	if err := json.Unmarshal([]byte(out), &rev); err != nil {
+		t.Fatalf("revoke --json must decode as api.TokenRevoked: %v\n%s", err, out)
+	}
+	if rev.Kind != "service" || rev.Subject != "linkmind" || !rev.Revoked {
+		t.Fatalf("revoke: %+v", rev)
+	}
+	if rec, _ := s.LookupToken(token.Hash(rot.Token)); rec != nil {
+		t.Fatal("token should be revoked")
+	}
+
+	srv := created("server", "token", "create", "s1", "-f", cfg, "--json")
+	if srv.Kind != "server" || srv.Subject != "s1" || !strings.HasPrefix(srv.Token, "hps_") {
+		t.Fatalf("server token: %+v", srv)
+	}
+
+	adm := created("admin-token", "create", "-f", cfg, "--json")
+	if adm.Kind != "admin" || adm.Subject != "admin" || !strings.HasPrefix(adm.Token, "hpa_") {
+		t.Fatalf("admin token: %+v", adm)
 	}
 }

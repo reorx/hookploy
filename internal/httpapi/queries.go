@@ -101,7 +101,7 @@ func (s *Server) followLogs(w http.ResponseWriter, r *http.Request, id string) {
 				enc(api.FromLogLine(ev.Line))
 			}
 			if ev.Done {
-				enc(map[string]any{"done": true, "status": string(ev.Status)})
+				enc(api.LogDone{Done: true, Status: string(ev.Status)})
 				if flusher != nil {
 					flusher.Flush()
 				}

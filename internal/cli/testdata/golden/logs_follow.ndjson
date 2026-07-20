@@ -1,0 +1,11 @@
+{
+  "at": "\u003ctime\u003e",
+  "data": "release deployed!\n",
+  "execution_id": "\u003cid\u003e",
+  "op_index": 0,
+  "stream": "stdout"
+}
+{
+  "done": true,
+  "status": "succeeded"
+}

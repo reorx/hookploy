@@ -6,7 +6,7 @@
 
 - M1（单机可用）✅ 已上线 ali-hk-01 正式实例，试点 linkmind
 - M2（主从：gRPC + edge + 在线状态 + rollout）✅ 代码完成并真机验证（2026-07-19）
-- M3（收尾：Ansible role、--json 冻结、JSON Schema、全量迁移）⏳ 未开始
+- M3（收尾）🔶 代码部分完成（2026-07-19）：--json 全覆盖 + golden 快照冻结（`internal/cli/testdata/golden/`，更新用 `go test ./internal/cli -update`）、`hookploy schema`（`config.JSONSchema()`，draft-07）、`ops.Catalog()`、README、`docs/json-output.md`、Makefile `dist`；Ansible role 已在 deploy 仓库。剩余生产项另起 session：breeze/simul 迁移（simul 前端 artifact 走 GitHub Release asset）、GHA 切换、旧 webhook 退役。已知遗留（review PLAUSIBLE，决定不修）：`logs -f` 探针改用类型化 FollowFrame 后解码变严，分歧帧会被静默丢弃（两端同源、风险低）
 
 ## 代码地图
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/reorx/hookploy/internal/token"
+	"github.com/reorx/hookploy/internal/webui/views"
 )
 
 const (
@@ -101,10 +102,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 
-// loginFailed answers an invalid login. Rendered as the login page with an
-// error message once the templ views exist; status is 401 either way.
-func (s *Server) loginFailed(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "invalid admin token", http.StatusUnauthorized)
+// loginFailed re-renders the login page with an error, status 401.
+func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request) {
+	render(w, r, http.StatusUnauthorized, views.Login("invalid admin token"))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

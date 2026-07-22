@@ -1,0 +1,7 @@
+package views
+
+templ Dashboard(servers []ServerChip) {
+	@Layout("hookploy", servers, nil) {
+		<div id="dashboard" data-poll="/ui/fragments/dashboard"></div>
+	}
+}

@@ -7,12 +7,17 @@
 package webui
 
 import (
+	"embed"
+	"io/fs"
 	"net/http"
 
 	"github.com/reorx/hookploy/internal/config"
 	"github.com/reorx/hookploy/internal/model"
 	"github.com/reorx/hookploy/internal/store"
 )
+
+//go:embed static
+var staticFS embed.FS
 
 // Server holds the web UI's dependencies (same injection set as httpapi.Server).
 type Server struct {
@@ -29,8 +34,17 @@ func New(st *store.Store, cfg func() *config.Config, edges func() map[string]mod
 
 // Handler builds the /ui/ routing table.
 func (s *Server) Handler() http.Handler {
+	static, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(err) // embed layout is fixed at build time
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ui/login", s.handleLoginPage)
 	mux.HandleFunc("POST /ui/login", s.handleLogin)
 	mux.HandleFunc("POST /ui/logout", s.handleLogout)
+	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
+	mux.HandleFunc("GET /ui/{$}", s.requireSession(s.handleDashboard))
+	mux.HandleFunc("GET /ui/services/{name}", s.requireSession(s.handleServicePage))
+	mux.HandleFunc("GET /ui/deploys/{id}", s.requireSession(s.handleDeployPage))
 	return mux
 }

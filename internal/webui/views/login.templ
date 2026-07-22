@@ -1,0 +1,23 @@
+package views
+
+templ Login(errMsg string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>hookploy — login</title>
+			<link rel="stylesheet" href="/ui/static/app.css"/>
+		</head>
+		<body class="login-body">
+			<form class="login-form" method="post" action="/ui/login">
+				<h1>hookploy</h1>
+				if errMsg != "" {
+					<p class="login-error">{ errMsg }</p>
+				}
+				<input type="password" name="token" placeholder="admin token" autofocus required autocomplete="off"/>
+				<button type="submit">Sign in</button>
+			</form>
+		</body>
+	</html>
+}

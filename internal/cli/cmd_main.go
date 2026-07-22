@@ -26,6 +26,7 @@ import (
 	"github.com/reorx/hookploy/internal/runner"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/store"
+	"github.com/reorx/hookploy/internal/webui"
 )
 
 // acquireWindow is how long a dispatching execution waits for its server's
@@ -93,14 +94,22 @@ func cmdMain(ctx *Context, args []string) int {
 		Config:   func() *config.Config { return cfgVal.Load() },
 		Logger:   logger,
 	}
+	ui := webui.New(st, func() *config.Config { return cfgVal.Load() }, grpcSrv.Edges)
 	apiSrv := &httpapi.Server{
-		Store:  st,
-		Sched:  sched,
-		Config: func() *config.Config { return cfgVal.Load() },
-		Reload: reload,
-		Edges:  grpcSrv.Edges,
+		Store:     st,
+		Sched:     sched,
+		Config:    func() *config.Config { return cfgVal.Load() },
+		Reload:    reload,
+		Edges:     grpcSrv.Edges,
+		SessionOK: ui.SessionValid,
 	}
-	httpServer := &http.Server{Addr: cfg.Listen.HTTP, Handler: apiSrv.Handler()}
+	mux := http.NewServeMux()
+	mux.Handle("/ui/", ui.Handler())
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
+	mux.Handle("/", apiSrv.Handler())
+	httpServer := &http.Server{Addr: cfg.Listen.HTTP, Handler: mux}
 
 	// gRPC listener for edges (h2c; Caddy terminates TLS in front). The
 	// keepalive pair detects dead edge connections within ~40s.

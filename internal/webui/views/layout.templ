@@ -1,0 +1,64 @@
+package views
+
+templ Layout(title string, servers []ServerChip, crumbs []Crumb) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ title }</title>
+			<link rel="stylesheet" href="/ui/static/app.css"/>
+			<script src="/ui/static/app.js" defer></script>
+			<script src="/ui/static/logs.js" defer></script>
+		</head>
+		<body>
+			<header class="topbar">
+				<a class="logo" href="/ui/">hookploy</a>
+				if len(crumbs) > 0 {
+					<nav class="crumbs">
+						for _, c := range crumbs {
+							<span class="crumb-sep">/</span>
+							if c.Href != "" {
+								<a href={ templ.URL(c.Href) }>{ c.Label }</a>
+							} else {
+								<span>{ c.Label }</span>
+							}
+						}
+					</nav>
+				}
+				<div class="spacer"></div>
+				<div class="servers">
+					for _, s := range servers {
+						@serverChip(s)
+					}
+				</div>
+				<form class="logout" method="post" action="/ui/logout">
+					<button type="submit" title="log out">logout</button>
+				</form>
+			</header>
+			<main>
+				{ children... }
+			</main>
+		</body>
+	</html>
+}
+
+templ serverChip(s ServerChip) {
+	<span class={ "server-chip", templ.KV("online", s.Online), templ.KV("offline", !s.Online) } title={ chipTitle(s) }>
+		<span class="dot"></span>
+		{ s.Name }
+		if s.Version != "" {
+			<span class="chip-version">{ s.Version }</span>
+		}
+	</span>
+}
+
+func chipTitle(s ServerChip) string {
+	if s.Local {
+		return s.Name + ": built-in executor"
+	}
+	if s.Online {
+		return s.Name + ": edge online"
+	}
+	return s.Name + ": edge offline"
+}

@@ -326,6 +326,77 @@ func TestRetention(t *testing.T) {
 
 // Behavior: a follower first gets the replay of existing lines, then new
 // lines live, and is told when the deploy reaches a terminal state.
+// Behavior: attaching to a deploy whose status already reads failed must not
+// end the stream while a sibling instance is still running — the failure
+// surfaces on the deploy as soon as one instance dies, but the others keep
+// producing logs the follower needs to see.
+func TestFollowDeployStreamsUntilAllInstancesSettle(t *testing.T) {
+	s := openTest(t)
+	d := &model.Deploy{
+		ID: model.NewDeployID(), Service: "svc", Kind: model.KindDeploy,
+		Payload: json.RawMessage(`{}`), Status: model.StatusQueued, CreatedAt: time.Now(),
+	}
+	mkExec := func(inst string) *model.Execution {
+		return &model.Execution{
+			ID: model.NewExecutionID(), DeployID: d.ID, Service: "svc", Instance: inst,
+			Server: "s1", Dir: "/opt/x",
+			OpsJSON: json.RawMessage(`[{"op":"compose.up"}]`),
+			Timeout: model.Duration(10 * time.Minute),
+			Status:  model.StatusQueued, CreatedAt: time.Now(),
+		}
+	}
+	m0, sg0 := mkExec("m0"), mkExec("sg0")
+	if err := s.CreateDeploy(d, []*model.Execution{m0, sg0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ex := range []*model.Execution{m0, sg0} {
+		s.TransitionExecution(ex.ID, model.StatusQueued, model.StatusDispatching, "")
+		s.TransitionExecution(ex.ID, model.StatusDispatching, model.StatusRunning, "")
+	}
+	// m0 dies; sg0 keeps running. The deploy already reads failed.
+	s.TransitionExecution(m0.ID, model.StatusRunning, model.StatusFailed, "boom")
+	if st, _ := s.RecomputeDeployStatus(d.ID); st != model.StatusFailed {
+		t.Fatalf("deploy should read failed already, got %s", st)
+	}
+
+	// A follower attaching *now* must still receive sg0's output.
+	events, stop, err := s.FollowDeploy(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	s.AppendLog(&model.LogLine{ExecutionID: sg0.ID, Stream: "stdout", Data: "still working", At: time.Now()})
+
+	select {
+	case ev := <-events:
+		if ev.Done {
+			t.Fatal("stream ended while a sibling instance was still running")
+		}
+		if ev.Line == nil || ev.Line.Data != "still working" {
+			t.Fatalf("expected sg0's log line, got %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower never received the running instance's output")
+	}
+
+	// sg0 settles → the rollout is over and the stream ends.
+	s.TransitionExecution(sg0.ID, model.StatusRunning, model.StatusSucceeded, "")
+	s.RecomputeDeployStatus(d.ID)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("stream closed without a done event")
+			}
+			if ev.Done {
+				return // expected
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no done event after every instance settled")
+		}
+	}
+}
+
 func TestFollowLogs(t *testing.T) {
 	s := openTest(t)
 	d, ex := mkDeploy(t, s, "svc")

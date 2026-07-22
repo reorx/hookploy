@@ -200,24 +200,40 @@ func (s *Store) TransitionExecution(id string, from, to model.Status, errMsg str
 	return n > 0, err
 }
 
-// RecomputeDeployStatus aggregates execution statuses into the deploy row
-// and notifies followers when the deploy reaches a terminal state.
-func (s *Store) RecomputeDeployStatus(deployID string) (model.Status, error) {
+// execStatuses returns the status of every execution of a deploy.
+func (s *Store) execStatuses(deployID string) ([]model.Status, error) {
 	rows, err := s.db.Query("SELECT status FROM executions WHERE deploy_id = ?", deployID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	defer rows.Close()
 	var statuses []model.Status
 	for rows.Next() {
 		var st string
 		if err := rows.Scan(&st); err != nil {
-			rows.Close()
-			return "", err
+			return nil, err
 		}
 		statuses = append(statuses, model.Status(st))
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	return statuses, rows.Err()
+}
+
+// DeploySettled reports whether every execution of a deploy has reached a
+// terminal status. The deploy's own status goes failed as soon as one
+// instance fails, so it cannot be used to tell that a rollout is over.
+func (s *Store) DeploySettled(deployID string) (bool, error) {
+	statuses, err := s.execStatuses(deployID)
+	if err != nil {
+		return false, err
+	}
+	return model.AllTerminal(statuses), nil
+}
+
+// RecomputeDeployStatus aggregates execution statuses into the deploy row
+// and notifies followers when the deploy reaches a terminal state.
+func (s *Store) RecomputeDeployStatus(deployID string) (model.Status, error) {
+	statuses, err := s.execStatuses(deployID)
+	if err != nil {
 		return "", err
 	}
 	agg := model.AggregateStatus(statuses)

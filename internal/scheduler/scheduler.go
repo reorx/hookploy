@@ -112,8 +112,12 @@ func (s *Scheduler) runDeploy(deployID string) {
 
 	for _, wave := range waves {
 		if failed || s.root.Err() != nil {
+			reason := "earlier wave failed"
+			if s.root.Err() != nil {
+				reason = "main shutting down"
+			}
 			for _, ex := range wave {
-				_, _ = s.store.TransitionExecution(ex.ID, model.StatusQueued, model.StatusCanceled, "earlier wave failed")
+				_, _ = s.store.TransitionExecution(ex.ID, model.StatusQueued, model.StatusCanceled, reason)
 			}
 			continue
 		}
@@ -149,8 +153,13 @@ func (s *Scheduler) runDeploy(deployID string) {
 			}
 			wg.Wait()
 		} else if failed {
+			// Only reachable when this wave's own first instance failed while
+			// resolving the rollout digest: an already-failed rollout is
+			// canceled at the top of the loop. These are siblings, not a
+			// later wave.
 			for _, ex := range rest {
-				_, _ = s.store.TransitionExecution(ex.ID, model.StatusQueued, model.StatusCanceled, "earlier wave failed")
+				_, _ = s.store.TransitionExecution(ex.ID, model.StatusQueued, model.StatusCanceled,
+					"first instance of this wave failed")
 			}
 		}
 		_, _ = s.store.RecomputeDeployStatus(deployID)

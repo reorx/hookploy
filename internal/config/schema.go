@@ -93,6 +93,10 @@ func JSONSchema() ([]byte, error) {
 				Type:        "string",
 				Description: "SQLite 数据库路径，默认与本文件同目录的 hookploy.db。",
 			},
+			"webui": {
+				Type:        "boolean",
+				Description: "是否挂载内置只读 Web UI（/ui/），默认 true；false 时 /ui/ 与根路径跳转均不注册，改动需重启 main 生效。",
+			},
 			"servers": {
 				Type:                 "object",
 				Description:          "部署目标服务器。键为 server 名，edge 的身份由 server token 的 subject 推导。",

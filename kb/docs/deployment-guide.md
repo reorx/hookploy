@@ -44,6 +44,7 @@ make build-linux-amd64   # 仅裸 binary dist/hookploy-linux-amd64
 - 发布 tarball 内含 binary + `hookploy-ctl.sh`（无 systemd 场景与手动运维的兜底控制脚本）；`make dist` 同时保留裸 binary `dist/hookploy-<os>-<arch>`，方便装机工具直接上传。
 - 正式 release：push `v*` tag 触发 `.github/workflows/release.yml`，产物与 `make dist` 同形态（tar.gz + checksums.txt），挂到 GitHub Releases；本地 `make dist` 即可复现。
 - main 和 edge 是**同一个 binary**，只是运行子命令不同。
+- **Web UI 资源全部编译进 binary**（CSS/JS 经 `go:embed`，templ 模板的生成码提交在仓库里），发布产物自包含：部署 main 不需要拷贝任何静态文件目录，部署 edge 也不需要剥离什么——edge 子命令根本不挂载 UI 路由。开发侧改了 `internal/webui/views/*.templ` 后必须跑 `scripts/gentempl.sh` 重新生成并提交；release workflow 会重新生成并比对，生成码过期时发布直接失败。
 
 ## 3. 单机部署（只有 main）
 
@@ -232,6 +233,12 @@ main 内置只读 Web 界面：浏览器访问 `https://hookploy.example.com/ui/
 页面结构：Dashboard（进行中部署卡片含实时日志尾部、服务器清单——在线状态/版本/edge 连接时长、服务清单、近期发布——被去重的 superseded 触发也在列）→ 服务详情（rollout×实例拓扑、deploy/tasks 流水线定义、历史）→ 部署详情（按波次的执行时间线、op 耗时与退出码、日志查看器：实时跟随、按实例过滤、op 行点击定位日志）。顶栏平时保持安静，仅当有服务器离线时显示红色警示徽章。
 
 **安全注意**：`/ui` 与 admin API 同 listener 同鉴权，把 UI 暴露公网等于暴露 admin API。建议仅内网访问，或反代层加护（IP 白名单 / basic auth / VPN）。
+
+**部署要点**：
+
+- UI 资源全部编译在 binary 里（见 §2），部署带 Web UI 的 main 没有任何额外步骤——按 §3.2 启动、按 §3.3 反代整个 HTTP 口即可，`/ui/` 与 API 同端口同域名，不需要单独 serve 静态文件，也没有 WebSocket（实时日志走同源 NDJSON 流 + 片段轮询）。
+- 不想暴露 UI 时，`hookploy.yaml` 顶层加 `webui: false`（默认 `true`）：`/ui/` 路由与根路径跳转完全不注册（404），会话 cookie 机制也不启用，admin API 回到纯 Bearer token。该开关在启动时定型，改动需**重启 main** 生效（`-/reload` / SIGHUP 热重载不改变路由挂载）。
+- edge 节点与 UI 无关：edge 子命令不挂载任何 UI 路由，无需任何配置。
 
 ## 6. 配置变更流程
 

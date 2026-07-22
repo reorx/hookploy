@@ -18,6 +18,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Web UI 模板的生成码（internal/webui/views/*_templ.go）是提交进仓库的，
+      # 二进制里的 UI 以它为准；这里重新生成并比对，防止改了 .templ 忘跑
+      # scripts/gentempl.sh 导致发布过期 UI。
+      - name: Verify templ generated code is in sync
+        run: |
+          go install github.com/a-h/templ/cmd/templ@$(go list -m -f '{{.Version}}' github.com/a-h/templ)
+          scripts/gentempl.sh
+          git diff --exit-code -- internal/webui/views
+
       - name: Test
         run: go test ./...
 

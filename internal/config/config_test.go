@@ -95,6 +95,30 @@ services:
 	}
 }
 
+// Behavior: top-level `webui` toggles the built-in web UI; omitted means on.
+func TestWebUIToggle(t *testing.T) {
+	base := minimalServers + `
+services:
+  app: { server: s1, dir: /opt/a, deploy: [compose.up] }
+`
+	for _, tc := range []struct {
+		prefix string
+		want   bool
+	}{
+		{"", true},
+		{"webui: true\n", true},
+		{"webui: false\n", false},
+	} {
+		cfg, err := load(t, tc.prefix+base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.WebUI != tc.want {
+			t.Fatalf("prefix %q: WebUI = %v, want %v", tc.prefix, cfg.WebUI, tc.want)
+		}
+	}
+}
+
 // Behavior: static validation rejects every misconfiguration class,
 // with the file (and line where applicable) in the message.
 func TestValidateErrors(t *testing.T) {

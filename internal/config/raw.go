@@ -14,6 +14,7 @@ import (
 type rawFile struct {
 	Listen   Listen                 `yaml:"listen"`
 	DB       string                 `yaml:"db"`
+	WebUI    *bool                  `yaml:"webui"`
 	Servers  map[string]rawServer   `yaml:"servers"`
 	Defaults rawDefaults            `yaml:"defaults"`
 	Services map[string]*rawService `yaml:"services"`

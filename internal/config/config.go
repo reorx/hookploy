@@ -19,6 +19,7 @@ type Config struct {
 	Path           string
 	Listen         Listen
 	DB             string
+	WebUI          bool
 	Servers        map[string]*Server
 	DefaultTimeout time.Duration
 	Services       map[string]*Service
@@ -93,6 +94,7 @@ func parse(data []byte) (*Config, error) {
 	cfg := &Config{
 		Listen:         raw.Listen,
 		DB:             raw.DB,
+		WebUI:          raw.WebUI == nil || *raw.WebUI,
 		Servers:        map[string]*Server{},
 		DefaultTimeout: defaultTimeout,
 		Services:       map[string]*Service{},

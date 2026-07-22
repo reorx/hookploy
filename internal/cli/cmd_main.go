@@ -94,22 +94,21 @@ func cmdMain(ctx *Context, args []string) int {
 		Config:   func() *config.Config { return cfgVal.Load() },
 		Logger:   logger,
 	}
-	ui := webui.New(st, func() *config.Config { return cfgVal.Load() }, grpcSrv.Edges)
 	apiSrv := &httpapi.Server{
-		Store:     st,
-		Sched:     sched,
-		Config:    func() *config.Config { return cfgVal.Load() },
-		Reload:    reload,
-		Edges:     grpcSrv.Edges,
-		SessionOK: ui.SessionValid,
+		Store:  st,
+		Sched:  sched,
+		Config: func() *config.Config { return cfgVal.Load() },
+		Reload: reload,
+		Edges:  grpcSrv.Edges,
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/ui/", ui.Handler())
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
-	})
-	mux.Handle("/", apiSrv.Handler())
-	httpServer := &http.Server{Addr: cfg.Listen.HTTP, Handler: mux}
+	var ui *webui.Server
+	if cfg.WebUI {
+		ui = webui.New(st, func() *config.Config { return cfgVal.Load() }, grpcSrv.Edges)
+		apiSrv.SessionOK = ui.SessionValid
+	} else {
+		logger.Printf("web ui disabled (webui: false)")
+	}
+	httpServer := &http.Server{Addr: cfg.Listen.HTTP, Handler: mainHandler(apiSrv, ui)}
 
 	// gRPC listener for edges (h2c; Caddy terminates TLS in front). The
 	// keepalive pair detects dead edge connections within ~40s.
@@ -168,4 +167,18 @@ func cmdMain(ctx *Context, args []string) int {
 			return 0
 		}
 	}
+}
+
+// mainHandler assembles main's HTTP routes: the webhook/admin API always; the
+// web UI and the / → /ui/ redirect only when ui is non-nil (`webui: true`).
+func mainHandler(apiSrv *httpapi.Server, ui *webui.Server) http.Handler {
+	mux := http.NewServeMux()
+	if ui != nil {
+		mux.Handle("/ui/", ui.Handler())
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusFound)
+		})
+	}
+	mux.Handle("/", apiSrv.Handler())
+	return mux
 }

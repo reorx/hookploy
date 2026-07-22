@@ -217,6 +217,38 @@ func TestFollowLogs(t *testing.T) {
 	t.Fatal("events channel closed without a Done event")
 }
 
+// Behavior: recent deploys across all services, newest first, truncated to limit.
+func TestListRecentDeploys(t *testing.T) {
+	s := openTest(t)
+	var ids []string // creation order: oldest first
+	for i, svc := range []string{"a", "b", "a", "c"} {
+		if i > 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
+		d, _ := mkDeploy(t, s, svc)
+		ids = append(ids, d.ID)
+	}
+	all, err := s.ListRecentDeploys(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("want 4 deploys, got %d", len(all))
+	}
+	for i, d := range all {
+		if want := ids[len(ids)-1-i]; d.ID != want {
+			t.Fatalf("position %d: got %s want %s (newest first)", i, d.ID, want)
+		}
+	}
+	top, err := s.ListRecentDeploys(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(top) != 2 || top[0].ID != ids[3] || top[1].ID != ids[2] {
+		t.Fatalf("limit truncation wrong: %+v", top)
+	}
+}
+
 // Behavior: latest deploy per service for the /services overview.
 func TestLatestDeploys(t *testing.T) {
 	s := openTest(t)

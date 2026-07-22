@@ -85,6 +85,25 @@ func (s *Store) ListDeploys(service string, limit int) ([]*model.Deploy, error) 
 	return out, rows.Err()
 }
 
+// ListRecentDeploys returns the newest deploys across all services.
+func (s *Store) ListRecentDeploys(limit int) ([]*model.Deploy, error) {
+	rows, err := s.db.Query(
+		"SELECT "+deployCols+" FROM deploys ORDER BY created_at DESC, rowid DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.Deploy
+	for rows.Next() {
+		d, err := scanDeploy(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // LatestDeploys returns the most recent deploy per service.
 func (s *Store) LatestDeploys() (map[string]*model.Deploy, error) {
 	rows, err := s.db.Query(

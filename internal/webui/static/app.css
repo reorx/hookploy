@@ -237,9 +237,66 @@ table.rows tr:hover td { background: #f0f4ff40; }
   word-break: break-all;
 }
 .log-window.card-mode { max-height: 10em; min-height: 3em; }
+.log-window.detail-mode { height: 60vh; min-height: 240px; }
+.log-line { display: block; min-height: 1em; }
+.log-line.hidden { display: none; }
 .log-window .prefix { color: #7d8590; }
 .log-window .stderr { color: #f0883e; }
 .log-window .system { color: #7d8590; font-style: italic; }
+
+/* ── deploy detail ──────────────────────────────────── */
+.deploy-error {
+  color: var(--st-failed);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: #dc262610;
+  border: 1px solid #dc262630;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+.payload { margin: 8px 0; }
+.payload summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.payload pre {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.wave-group { margin-bottom: 12px; }
+.exec-block {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 6px 0;
+}
+.exec-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.exec-name { font-weight: 600; }
+.op-list { margin: 6px 0 0; padding: 0; list-style: none; }
+.op-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.op-row:hover { background: var(--bg); }
+.op-error { color: var(--st-failed); font-family: var(--mono); font-size: 12px; }
+.log-toolbar { display: flex; align-items: center; gap: 14px; }
+.log-toolbar select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  background: var(--panel);
+}
+.pin-toggle { font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
 
 /* ── status badges ──────────────────────────────────── */
 .badge {

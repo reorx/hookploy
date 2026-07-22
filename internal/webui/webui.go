@@ -45,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /ui/{$}", s.requireSession(s.handleDashboard))
 	mux.HandleFunc("GET /ui/fragments/dashboard", s.fragmentAuth(s.handleDashboardFragment))
+	mux.HandleFunc("GET /ui/fragments/deploys/{id}/status", s.fragmentAuth(s.handleDeployStatusFragment))
 	mux.HandleFunc("GET /ui/services/{name}", s.requireSession(s.handleServicePage))
 	mux.HandleFunc("GET /ui/deploys/{id}", s.requireSession(s.handleDeployPage))
 	return mux

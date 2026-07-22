@@ -107,6 +107,62 @@ type TaskView struct {
 	Steps []StepView
 }
 
+// DeployPage feeds the deploy detail page.
+type DeployPage struct {
+	ID        string
+	Service   string
+	Kind      string
+	Status    string
+	Error     string
+	Digest    string // short form
+	CreatedAt time.Time
+	Duration  string
+	Payload   string // pretty-printed JSON, "" when trivial
+	Terminal  bool
+	Waves     []WaveView
+	Execs     []ExecOption            // filter dropdown
+	ExecMap   map[string]ExecMapEntry // for logs.js prefixes and anchors
+}
+
+// WaveView is one wave of the execution timeline.
+type WaveView struct {
+	Index int // 1-based
+	Execs []ExecView
+}
+
+// ExecView is one execution block inside the timeline.
+type ExecView struct {
+	ID       string
+	Instance string
+	Server   string
+	Dir      string
+	Status   string
+	Error    string
+	Duration string
+	Ops      []OpView
+}
+
+// OpView is one op row of an execution.
+type OpView struct {
+	Index    int
+	Name     string
+	Duration string
+	ExitCode string // "" when the op spawned no process
+	Error    string
+}
+
+// ExecOption is one entry of the log execution filter.
+type ExecOption struct {
+	ID    string
+	Label string
+}
+
+// ExecMapEntry tells logs.js how to label frames of one execution.
+type ExecMapEntry struct {
+	Instance string            `json:"instance"`
+	Ops      map[string]string `json:"ops"` // op index (decimal string) → op name
+}
+
 // KindLabel renders a deploy's kind: "deploy" or "task:<name>".
 func KindLabel(kind, task string) string {
 	if task != "" {

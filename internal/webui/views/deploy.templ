@@ -1,0 +1,102 @@
+package views
+
+import "fmt"
+
+templ DeployDetail(servers []ServerChip, p DeployPage) {
+	@Layout("hookploy — "+p.ID, servers, []Crumb{{Label: p.Service, Href: "/ui/services/" + p.Service}, {Label: p.ID}}) {
+		if p.Terminal {
+			<div id="deploy-status">
+				@DeployStatus(p)
+			</div>
+		} else {
+			<div id="deploy-status" data-poll={ "/ui/fragments/deploys/" + p.ID + "/status" }>
+				@DeployStatus(p)
+			</div>
+		}
+		<section class="section log-section">
+			<div class="section-head">
+				<h2>日志</h2>
+				<div class="log-toolbar">
+					<select id="exec-filter">
+						<option value="">全部实例</option>
+						for _, e := range p.Execs {
+							<option value={ e.ID }>{ e.Label }</option>
+						}
+					</select>
+					<label class="pin-toggle" title="上滚时自动暂停跟随">
+						<input type="checkbox" id="pin-bottom" checked/>
+						📌 固定底部
+					</label>
+				</div>
+			</div>
+			@templ.JSONScript("exec-map", p.ExecMap)
+			<pre
+				id="log-viewer"
+				class="log-window detail-mode"
+				data-follow={ p.ID }
+				data-mode="detail"
+				data-terminal={ fmt.Sprint(p.Terminal) }
+			></pre>
+		</section>
+	}
+}
+
+templ DeployStatus(p DeployPage) {
+	<div class="page-head">
+		<h1>{ p.Service }</h1>
+		<span class="mono muted">{ p.ID }</span>
+		<span class="muted">{ p.Kind }</span>
+		@StatusBadge(p.Status)
+		if p.Digest != "" {
+			<span class="mono muted" title="image digest">{ p.Digest }</span>
+		}
+		<span class="muted" title="created at">{ Clock(p.CreatedAt) }</span>
+		<span class="mono muted" title="duration">{ p.Duration }</span>
+	</div>
+	if p.Error != "" {
+		<p class="deploy-error">{ p.Error }</p>
+	}
+	if p.Payload != "" {
+		<details class="payload">
+			<summary>payload</summary>
+			<pre class="mono">{ p.Payload }</pre>
+		</details>
+	}
+	<section class="section">
+		<h2>执行时间线</h2>
+		for _, w := range p.Waves {
+			<div class="wave-group">
+				<div class="wave-label">{ fmt.Sprintf("wave %d", w.Index) }</div>
+				for _, e := range w.Execs {
+					<div class="exec-block">
+						<div class="exec-head">
+							<span class="mono exec-name">{ e.Instance + " @ " + e.Server }</span>
+							<span class="mono muted">{ e.Dir }</span>
+							@StatusBadge(e.Status)
+							<span class="mono muted">{ e.Duration }</span>
+						</div>
+						if e.Error != "" {
+							<p class="deploy-error">{ e.Error }</p>
+						}
+						if len(e.Ops) > 0 {
+							<ol class="op-list">
+								for _, op := range e.Ops {
+									<li class="op-row" data-exec={ e.ID } data-op={ fmt.Sprint(op.Index) } title="点击定位日志">
+										<span class="op-name mono">{ op.Name }</span>
+										<span class="mono muted">{ op.Duration }</span>
+										if op.ExitCode != "" {
+											<span class="mono muted">{ "exit " + op.ExitCode }</span>
+										}
+										if op.Error != "" {
+											<span class="op-error">{ op.Error }</span>
+										}
+									</li>
+								}
+							</ol>
+						}
+					</div>
+				}
+			</div>
+		}
+	</section>
+}

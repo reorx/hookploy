@@ -15,11 +15,17 @@ import (
 // mkDeploy inserts a deploy with one execution for the configured service.
 func (h *harness) mkDeploy(service string, status model.Status) *model.Deploy {
 	h.t.Helper()
+	d, _ := h.mkDeployExec(service, status)
+	return d
+}
+
+func (h *harness) mkDeployExec(service string, status model.Status) (*model.Deploy, *model.Execution) {
+	h.t.Helper()
 	d := &model.Deploy{
 		ID:        model.NewDeployID(),
 		Service:   service,
 		Kind:      model.KindDeploy,
-		Payload:   json.RawMessage(`{}`),
+		Payload:   json.RawMessage(`{"note":"hi"}`),
 		Status:    status,
 		CreatedAt: time.Now(),
 	}
@@ -38,7 +44,7 @@ func (h *harness) mkDeploy(service string, status model.Status) *model.Deploy {
 	if err := h.ui.Store.CreateDeploy(d, []*model.Execution{ex}); err != nil {
 		h.t.Fatal(err)
 	}
-	return d
+	return d, ex
 }
 
 func (h *harness) body(resp *http.Response) string {
@@ -214,6 +220,91 @@ func TestServicePage(t *testing.T) {
 		t.Fatalf("unknown service: %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// Behavior: the deploy detail page shows the header facts, the per-wave
+// execution timeline with op records, and mounts the log viewer with the
+// execution filter and the exec map for anchor synthesis.
+func TestDeployPage(t *testing.T) {
+	h := newHarness(t)
+	h.login(h.adminToken)
+	d, ex := h.mkDeployExec("svc", model.StatusFailed)
+	st := h.ui.Store
+	st.SetDeployDigest(d.ID, "sha256:abcdef1234567890")
+	st.StartOp(ex.ID, 0, "run")
+	code := 1
+	st.FinishOp(ex.ID, 0, &code, "exit status 1")
+
+	resp := h.get("/ui/deploys/" + d.ID)
+	if resp.StatusCode != 200 {
+		t.Fatalf("deploy page: %d", resp.StatusCode)
+	}
+	body := h.body(resp)
+	// header: id, status, digest short form, payload details
+	for _, want := range []string{d.ID, "failed", "abcdef123456", "&#34;note&#34;", "<details"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("header missing %q", want)
+		}
+	}
+	// timeline: wave, execution line, op record with exit code and error
+	for _, want := range []string{"wave 1", "svc @ s1", "/opt/svc", "run", "exit 1", "exit status 1"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("timeline missing %q", want)
+		}
+	}
+	// log viewer mount: follow target, terminal flag, exec filter, exec map
+	for _, want := range []string{
+		`data-follow="` + d.ID + `"`, `data-terminal="true"`,
+		`id="exec-filter"`, `value="` + ex.ID + `"`, `id="exec-map"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("log viewer missing %q", want)
+		}
+	}
+	// status region is polled while the deploy runs; this one is terminal
+	if strings.Contains(body, `data-poll="/ui/fragments/deploys/`) {
+		t.Fatal("terminal deploy must not poll the status fragment")
+	}
+
+	run, _ := h.mkDeployExec("svc", model.StatusRunning)
+	body = h.body(h.get("/ui/deploys/" + run.ID))
+	if !strings.Contains(body, `data-poll="/ui/fragments/deploys/`+run.ID+`/status"`) {
+		t.Fatal("running deploy should poll the status fragment")
+	}
+
+	// unknown deploy → 404
+	resp = h.get("/ui/deploys/dp_nope")
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown deploy: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// Behavior: the status fragment serves header+timeline without the layout;
+// anonymous JS fetches get 401.
+func TestDeployStatusFragment(t *testing.T) {
+	h := newHarness(t)
+	d := h.mkDeploy("svc", model.StatusRunning)
+	resp := h.get("/ui/fragments/deploys/" + d.ID + "/status")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	h.login(h.adminToken)
+	resp = h.get("/ui/fragments/deploys/" + d.ID + "/status")
+	if resp.StatusCode != 200 {
+		t.Fatalf("fragment: %d", resp.StatusCode)
+	}
+	body := h.body(resp)
+	if strings.Contains(body, "<html") {
+		t.Fatal("fragment must not include the layout shell")
+	}
+	for _, want := range []string{d.ID, "running", "wave 1"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("fragment missing %q", want)
+		}
+	}
 }
 
 // Behavior: a logged-in dashboard request renders the layout shell with the

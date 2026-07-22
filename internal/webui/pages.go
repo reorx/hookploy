@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -236,7 +237,119 @@ func argValue(v any) string {
 }
 
 func (s *Server) handleDeployPage(w http.ResponseWriter, r *http.Request) {
-	http.NotFound(w, r) // implemented in M4 step 7
+	page, found, err := s.deployPage(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	render(w, r, http.StatusOK, views.DeployDetail(s.serverChips(), page))
+}
+
+func (s *Server) handleDeployStatusFragment(w http.ResponseWriter, r *http.Request) {
+	page, found, err := s.deployPage(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	render(w, r, http.StatusOK, views.DeployStatus(page))
+}
+
+func (s *Server) deployPage(id string) (views.DeployPage, bool, error) {
+	var page views.DeployPage
+	d, err := s.Store.GetDeploy(id)
+	if err != nil || d == nil {
+		return page, false, err
+	}
+	row := deployRow(d)
+	page = views.DeployPage{
+		ID:        d.ID,
+		Service:   d.Service,
+		Kind:      row.Kind,
+		Status:    row.Status,
+		Error:     d.Error,
+		Digest:    row.Digest,
+		CreatedAt: d.CreatedAt,
+		Duration:  row.Duration,
+		Payload:   prettyPayload(d.Payload),
+		Terminal:  d.Status.Terminal(),
+		ExecMap:   map[string]views.ExecMapEntry{},
+	}
+	execs, err := s.Store.ListExecutions(id)
+	if err != nil {
+		return page, true, err
+	}
+	for _, ex := range execs {
+		ev := views.ExecView{
+			ID:       ex.ID,
+			Instance: ex.Instance,
+			Server:   ex.Server,
+			Dir:      ex.Dir,
+			Status:   string(ex.Status),
+			Error:    ex.Error,
+		}
+		if ex.StartedAt != nil {
+			if ex.FinishedAt != nil || !ex.Status.Terminal() {
+				ev.Duration = views.Elapsed(*ex.StartedAt, ex.FinishedAt)
+			}
+		}
+		recs, err := s.Store.ListOpRecords(ex.ID)
+		if err != nil {
+			return page, true, err
+		}
+		for _, rec := range recs {
+			op := views.OpView{Index: rec.OpIndex, Name: rec.OpName, Error: rec.Error}
+			if rec.FinishedAt != nil {
+				op.Duration = views.Elapsed(rec.StartedAt, rec.FinishedAt)
+			}
+			if rec.ExitCode != nil {
+				op.ExitCode = fmt.Sprint(*rec.ExitCode)
+			}
+			ev.Ops = append(ev.Ops, op)
+		}
+		if len(page.Waves) == 0 || page.Waves[len(page.Waves)-1].Index != ex.Wave+1 {
+			page.Waves = append(page.Waves, views.WaveView{Index: ex.Wave + 1})
+		}
+		last := len(page.Waves) - 1
+		page.Waves[last].Execs = append(page.Waves[last].Execs, ev)
+		page.Execs = append(page.Execs, views.ExecOption{ID: ex.ID, Label: ex.Instance + " @ " + ex.Server})
+		page.ExecMap[ex.ID] = execMapEntry(ex)
+	}
+	return page, true, nil
+}
+
+// execMapEntry maps op indexes to names from the execution's ops snapshot,
+// so logs.js can label frames of ops that never got an op record.
+func execMapEntry(ex *model.Execution) views.ExecMapEntry {
+	entry := views.ExecMapEntry{Instance: ex.Instance, Ops: map[string]string{}}
+	var steps []struct {
+		Op string `json:"op"`
+	}
+	if err := json.Unmarshal(ex.OpsJSON, &steps); err == nil {
+		for i, st := range steps {
+			entry.Ops[fmt.Sprint(i)] = st.Op
+		}
+	}
+	return entry
+}
+
+func prettyPayload(raw json.RawMessage) string {
+	trimmed := string(raw)
+	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return trimmed
+	}
+	return buf.String()
 }
 
 // serverChips mirrors httpapi's GET /servers logic for the topbar strip.

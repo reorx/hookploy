@@ -4,7 +4,7 @@
 
 ## 项目状态
 
-M1–M3 全部完成（2026-07-19）。`--json` / `internal/api` DTO / HTTP API 契约已冻结。已知遗留（决定不修）：`logs -f` 探针用类型化 FollowFrame 后解码变严，分歧帧被静默丢弃（两端同源、风险低）。
+M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现（2026-07-22，计划见 `kb/plans/2026-07-21-web-ui-plan.md`）。`--json` / `internal/api` DTO / HTTP API 契约已冻结。已知遗留（决定不修）：`logs -f` 探针用类型化 FollowFrame 后解码变严，分歧帧被静默丢弃（两端同源、风险低）。
 
 生产部署、服务迁移等运维事项不在本仓库跟踪（见用户全局 CLAUDE.md 的 DevOps 约定，统一在 deploy 目录管理）。
 
@@ -12,6 +12,7 @@ M1–M3 全部完成（2026-07-19）。`--json` / `internal/api` DTO / HTTP API 
 
 - 测试：`go test ./...`；CLI golden 快照（`internal/cli/testdata/golden/`）更新：`go test ./internal/cli -update`
 - proto 改动后：`scripts/genproto.sh` 重新生成 `internal/pb`（需要 protoc + protoc-gen-go + protoc-gen-go-grpc）
+- templ 改动后（`internal/webui/views/*.templ`）：`scripts/gentempl.sh` 重新生成 `*_templ.go`（需要 templ CLI，版本与 go.mod 一致）；生成文件提交进仓库
 - 发布：`make dist`；push `v*` tag 触发 GitHub Releases。版本号经 `-ldflags -X .../internal/version.Version=` 注入，main/edge 握手互报
 
 ## 代码地图
@@ -26,6 +27,7 @@ M1–M3 全部完成（2026-07-19）。`--json` / `internal/api` DTO / HTTP API 
 - `internal/edge` — edge 角色：重连循环、本机执行、流式回传
 - `proto/` → `internal/pb` — 协议定义与生成代码
 - `internal/store` — SQLite；`internal/httpapi` — webhook + 状态 API；`internal/cli` — 命令入口；`internal/apiclient` — CLI 访问 admin API 的 HTTP 客户端；`internal/token` — token 生成/哈希
+- `internal/webui` — 内置只读 Web UI（`/ui/`）：templ 服务端渲染 + 会话 cookie（admin token 登录；cookie 仅对 GET admin API 生效）；`views/` templ 源与生成码，`static/` embed 的 CSS/JS（app.js 片段轮询、logs.js NDJSON 日志流）
 
 ## 关键约束
 

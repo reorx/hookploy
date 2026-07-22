@@ -199,6 +199,12 @@ token 管理类命令仅限 main 本机执行（直接操作 SQLite，admin API 
 
 `--json` 输出与 HTTP API 序列化同一批 DTO，结构已冻结、字段只增不改，可安全依赖——契约见 [docs/json-output.md](docs/json-output.md)。
 
+## Web UI
+
+main 内置只读 Web 界面（随单 binary 分发，零外部依赖）：浏览器访问 `http://<main>/ui/`（`/` 自动跳转），用 admin token 登录换取会话 cookie。Dashboard 展示进行中部署（含实时日志尾部）、服务清单与近期发布（被去重的 superseded 触发也可见）；钻取服务详情（rollout 拓扑、流水线定义）与部署详情（波次执行时间线、op 耗时/退出码、终端风日志查看器，支持实时跟随与按实例过滤）。
+
+UI 与 admin API 同 listener：暴露 `/ui` 到公网即暴露 admin API（同源同鉴权），建议反代加护或仅内网访问；v1 只读，不提供任何触发操作。
+
 ## op 词汇表
 
 `image.pin`（digest 锁定加内置验证）、`image.extract`（从镜像抽文件近原子交换）、`artifact.extract`（下载、sha256 校验、解压交换）、`compose.pull` / `compose.up` / `compose.run` / `compose.exec` / `compose.restart`、`env.require` / `env.write`、`healthcheck`（轮询 HTTP 直到健康）、`run`（argv 逃生舱，不经 shell）。完整参数见 `docs/PRD.md` §4，机器可读的定义在 `hookploy schema` 输出里。
@@ -219,4 +225,4 @@ go vet ./...
 make build           # tmp/hookploy
 ```
 
-proto 改动后跑 `scripts/genproto.sh` 重新生成 `internal/pb`（需要 protoc + protoc-gen-go + protoc-gen-go-grpc）。CLI golden 快照（`internal/cli/testdata/golden/`）更新用 `go test ./internal/cli -update`。
+proto 改动后跑 `scripts/genproto.sh` 重新生成 `internal/pb`（需要 protoc + protoc-gen-go + protoc-gen-go-grpc）。templ 模板（`internal/webui/views/*.templ`）改动后跑 `scripts/gentempl.sh`（需要 templ CLI，版本以 go.mod 为准）。生成文件均提交进仓库，普通 `go build` / CI 不需要这些工具。CLI golden 快照（`internal/cli/testdata/golden/`）更新用 `go test ./internal/cli -update`。

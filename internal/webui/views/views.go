@@ -8,12 +8,13 @@ import (
 	"time"
 )
 
-// ServerChip is one server in the topbar status strip.
-type ServerChip struct {
-	Name    string
-	Online  bool
-	Local   bool
-	Version string
+// ServerRow is one row of the dashboard's servers section.
+type ServerRow struct {
+	Name         string
+	Online       bool
+	Local        bool
+	Version      string
+	ConnectedFor string // edge session age ("2h"), edges only
 }
 
 // Crumb is one breadcrumb segment; empty Href renders as plain text.
@@ -22,9 +23,10 @@ type Crumb struct {
 	Href  string
 }
 
-// DashboardData feeds the dashboard's three sections.
+// DashboardData feeds the dashboard's sections.
 type DashboardData struct {
 	Active   []ActiveDeploy
+	Servers  []ServerRow
 	Services []ServiceRow
 	Recent   []DeployRow
 }

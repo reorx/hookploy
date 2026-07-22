@@ -2,8 +2,8 @@ package views
 
 import "fmt"
 
-templ ServiceDetail(servers []ServerChip, p ServicePage) {
-	@Layout("hookploy — "+p.Name, servers, []Crumb{{Label: p.Name}}) {
+templ ServiceDetail(offline int, p ServicePage) {
+	@Layout("hookploy — "+p.Name, offline, []Crumb{{Label: p.Name}}) {
 		<div class="page-head">
 			<h1>{ p.Name }</h1>
 			@webhookMark(p.Webhook)

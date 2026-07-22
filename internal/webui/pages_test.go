@@ -122,6 +122,19 @@ func TestDashboardSections(t *testing.T) {
 	if !strings.Contains(body, `/ui/services/svc`) {
 		t.Fatalf("service row link missing: %s", body)
 	}
+	// servers section: s1 online, s2 (edge, no session) offline
+	for _, want := range []string{"服务器", `class="dot online"`, `class="dot offline"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("servers section missing %q", want)
+		}
+	}
+	// topbar: offline warning badge, no per-server chips
+	if !strings.Contains(body, "1 台服务器离线") {
+		t.Fatal("topbar should warn about the offline server")
+	}
+	if strings.Contains(body, "server-chip") {
+		t.Fatal("topbar must not render per-server chips")
+	}
 
 	done := h.mkDeploy("svc", model.StatusSucceeded)
 	sup := h.mkDeploy("svc", model.StatusSuperseded)
@@ -167,6 +180,10 @@ func TestDashboardFragment(t *testing.T) {
 	}
 	if !strings.Contains(body, "/ui/services/svc") {
 		t.Fatalf("fragment missing service section: %s", body)
+	}
+	// server rows live in the polled fragment so status stays fresh
+	if !strings.Contains(body, "服务器") {
+		t.Fatalf("fragment missing servers section: %s", body)
 	}
 }
 

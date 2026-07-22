@@ -36,7 +36,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, r, http.StatusOK, views.Dashboard(s.serverChips(), data))
+	render(w, r, http.StatusOK, views.Dashboard(offlineCount(data.Servers), data))
 }
 
 func (s *Server) handleDashboardFragment(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +51,7 @@ func (s *Server) handleDashboardFragment(w http.ResponseWriter, r *http.Request)
 func (s *Server) dashboardData() (views.DashboardData, error) {
 	var data views.DashboardData
 	cfg := s.Config()
+	data.Servers = s.serverRows()
 	latest, err := s.Store.LatestDeploys()
 	if err != nil {
 		return data, err
@@ -149,7 +150,7 @@ func (s *Server) handleServicePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, r, http.StatusOK, views.ServiceDetail(s.serverChips(), page))
+	render(w, r, http.StatusOK, views.ServiceDetail(offlineCount(s.serverRows()), page))
 }
 
 func (s *Server) servicePage(svc *config.Service) (views.ServicePage, error) {
@@ -160,8 +161,8 @@ func (s *Server) servicePage(svc *config.Service) (views.ServicePage, error) {
 		Timeout: svc.Timeout.String(),
 	}
 	online := map[string]bool{}
-	for _, chip := range s.serverChips() {
-		online[chip.Name] = chip.Online
+	for _, row := range s.serverRows() {
+		online[row.Name] = row.Online
 	}
 	for _, wave := range svc.Rollout {
 		cards := make([]views.InstanceCard, 0, len(wave))
@@ -248,7 +249,7 @@ func (s *Server) handleDeployPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	render(w, r, http.StatusOK, views.DeployDetail(s.serverChips(), page))
+	render(w, r, http.StatusOK, views.DeployDetail(offlineCount(s.serverRows()), page))
 }
 
 func (s *Server) handleDeployStatusFragment(w http.ResponseWriter, r *http.Request) {
@@ -354,8 +355,9 @@ func prettyPayload(raw json.RawMessage) string {
 	return buf.String()
 }
 
-// serverChips mirrors httpapi's GET /servers logic for the topbar strip.
-func (s *Server) serverChips() []views.ServerChip {
+// serverRows mirrors httpapi's GET /servers logic for the dashboard's
+// servers section.
+func (s *Server) serverRows() []views.ServerRow {
 	cfg := s.Config()
 	edges := map[string]model.EdgeInfo{}
 	if s.Edges != nil {
@@ -366,18 +368,29 @@ func (s *Server) serverChips() []views.ServerChip {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	out := make([]views.ServerChip, 0, len(names))
+	out := make([]views.ServerRow, 0, len(names))
 	for _, name := range names {
 		srv := cfg.Servers[name]
-		chip := views.ServerChip{Name: name, Local: srv.Local}
+		row := views.ServerRow{Name: name, Local: srv.Local}
 		if srv.Local {
-			chip.Online = true
-			chip.Version = version.Version
+			row.Online = true
+			row.Version = version.Version
 		} else if info, ok := edges[name]; ok {
-			chip.Online = true
-			chip.Version = info.Version
+			row.Online = true
+			row.Version = info.Version
+			row.ConnectedFor = views.Ago(info.ConnectedAt)
 		}
-		out = append(out, chip)
+		out = append(out, row)
 	}
 	return out
+}
+
+func offlineCount(rows []views.ServerRow) int {
+	n := 0
+	for _, row := range rows {
+		if !row.Online {
+			n++
+		}
+	}
+	return n
 }

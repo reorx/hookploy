@@ -2,8 +2,8 @@ package views
 
 import "fmt"
 
-templ DeployDetail(servers []ServerChip, p DeployPage) {
-	@Layout("hookploy — "+p.ID, servers, []Crumb{{Label: p.Service, Href: "/ui/services/" + p.Service}, {Label: p.ID}}) {
+templ DeployDetail(offline int, p DeployPage) {
+	@Layout("hookploy — "+p.ID, offline, []Crumb{{Label: p.Service, Href: "/ui/services/" + p.Service}, {Label: p.ID}}) {
 		if p.Terminal {
 			<div id="deploy-status">
 				@DeployStatus(p)

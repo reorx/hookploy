@@ -1,6 +1,11 @@
 package views
 
-templ Layout(title string, servers []ServerChip, crumbs []Crumb) {
+import "fmt"
+
+// Layout is the page shell. The topbar stays quiet while everything is
+// healthy; offline is the number of offline servers and renders a single
+// warning badge when non-zero (per-server detail lives on the dashboard).
+templ Layout(title string, offline int, crumbs []Crumb) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
@@ -27,11 +32,9 @@ templ Layout(title string, servers []ServerChip, crumbs []Crumb) {
 					</nav>
 				}
 				<div class="spacer"></div>
-				<div class="servers">
-					for _, s := range servers {
-						@serverChip(s)
-					}
-				</div>
+				if offline > 0 {
+					<a class="offline-warn" href="/ui/" title="详情见 dashboard 服务器区">{ fmt.Sprintf("● %d 台服务器离线", offline) }</a>
+				}
 				<form class="logout" method="post" action="/ui/logout">
 					<button type="submit" title="log out">logout</button>
 				</form>
@@ -41,24 +44,4 @@ templ Layout(title string, servers []ServerChip, crumbs []Crumb) {
 			</main>
 		</body>
 	</html>
-}
-
-templ serverChip(s ServerChip) {
-	<span class={ "server-chip", templ.KV("online", s.Online), templ.KV("offline", !s.Online) } title={ chipTitle(s) }>
-		<span class="dot"></span>
-		{ s.Name }
-		if s.Version != "" {
-			<span class="chip-version">{ s.Version }</span>
-		}
-	</span>
-}
-
-func chipTitle(s ServerChip) string {
-	if s.Local {
-		return s.Name + ": built-in executor"
-	}
-	if s.Online {
-		return s.Name + ": edge online"
-	}
-	return s.Name + ": edge offline"
 }

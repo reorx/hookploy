@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-templ Dashboard(servers []ServerChip, data DashboardData) {
-	@Layout("hookploy", servers, nil) {
+templ Dashboard(offline int, data DashboardData) {
+	@Layout("hookploy", offline, nil) {
 		<div id="dashboard" data-poll="/ui/fragments/dashboard">
 			@DashboardContent(data)
 		</div>
@@ -31,6 +31,36 @@ templ DashboardContent(data DashboardData) {
 				@activeCard(a)
 			}
 		}
+	</section>
+	<section class="section">
+		<h2>服务器</h2>
+		<table class="rows">
+			<tbody>
+				for _, s := range data.Servers {
+					<tr>
+						<td>
+							<span class={ "dot", templ.KV("online", s.Online), templ.KV("offline", !s.Online) }></span>
+							<span class="svc-name">{ s.Name }</span>
+						</td>
+						<td class="muted">
+							if s.Local {
+								main 内建
+							} else if s.Online {
+								edge 在线
+							} else {
+								edge 离线
+							}
+						</td>
+						<td class="mono muted">{ s.Version }</td>
+						<td class="muted">
+							if s.ConnectedFor != "" {
+								{ "已连接 " + s.ConnectedFor }
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
 	</section>
 	<section class="section">
 		<h2>服务</h2>

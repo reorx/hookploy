@@ -20,7 +20,7 @@ import (
 const testConfig = `
 servers:
   s1: { local: true }
-  s2: { local: true }
+  s2: {} # edge server with no session in tests → offline
 services:
   svc:
     server: s1

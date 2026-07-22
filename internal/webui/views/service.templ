@@ -1,0 +1,88 @@
+package views
+
+import "fmt"
+
+templ ServiceDetail(servers []ServerChip, p ServicePage) {
+	@Layout("hookploy — "+p.Name, servers, []Crumb{{Label: p.Name}}) {
+		<div class="page-head">
+			<h1>{ p.Name }</h1>
+			@webhookMark(p.Webhook)
+			if p.Image != "" {
+				<span class="mono muted">{ p.Image }</span>
+			}
+			<span class="muted">{ "timeout " + p.Timeout }</span>
+		</div>
+		<section class="section">
+			<h2>Rollout</h2>
+			<div class="rollout">
+				for i, wave := range p.Waves {
+					if i > 0 {
+						<div class="wave-arrow">→</div>
+					}
+					<div class="wave">
+						<div class="wave-label">{ fmt.Sprintf("wave %d", i+1) }</div>
+						for _, inst := range wave {
+							<div class="inst-card">
+								<div class="inst-name mono">{ inst.Name }</div>
+								<div class="inst-server">
+									<span class={ "dot", templ.KV("online", inst.Online), templ.KV("offline", !inst.Online) }></span>
+									{ inst.Server }
+								</div>
+								<div class="inst-dir mono muted">{ inst.Dir }</div>
+							</div>
+						}
+					</div>
+				}
+			</div>
+		</section>
+		<section class="section">
+			<h2>Deploy pipeline</h2>
+			@pipeline(p.Deploy)
+		</section>
+		if len(p.Tasks) > 0 {
+			<section class="section">
+				<h2>Tasks</h2>
+				for _, t := range p.Tasks {
+					<h3 class="task-name mono">{ t.Name }</h3>
+					@pipeline(t.Steps)
+				}
+			</section>
+		}
+		<section class="section">
+			<h2>历史</h2>
+			if len(p.History) == 0 {
+				<p class="empty">还没有任何发布记录</p>
+			} else {
+				<table class="rows">
+					<tbody>
+						for _, d := range p.History {
+							<tr>
+								<td class="mono muted">{ Clock(d.CreatedAt) }</td>
+								<td class="muted">{ d.Kind }</td>
+								<td>
+									@StatusBadge(d.Status)
+								</td>
+								<td class="mono muted">{ d.Digest }</td>
+								<td class="mono muted">{ d.Duration }</td>
+								<td><a class="mono" href={ templ.URL("/ui/deploys/" + d.ID) }>{ d.ID }</a></td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+	}
+}
+
+templ pipeline(steps []StepView) {
+	<ol class="pipeline">
+		for _, st := range steps {
+			<li>
+				<span class="op-name mono">{ st.Op }</span>
+				for _, kv := range st.Args {
+					<span class="op-arg mono">{ kv.K + "=" + kv.V }</span>
+				}
+			</li>
+		}
+	</ol>
+}

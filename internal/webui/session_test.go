@@ -20,12 +20,28 @@ import (
 const testConfig = `
 servers:
   s1: { local: true }
+  s2: { local: true }
 services:
   svc:
     server: s1
     dir: /opt/svc
     deploy:
       - run: { argv: [x] }
+  multi:
+    image: ghcr.io/x/multi
+    instances:
+      m-a: { server: s1, dir: /opt/m-a }
+      m-b: { server: s2, dir: /opt/m-b }
+    rollout:
+      - m-a
+      - m-b
+    deploy:
+      - compose.pull
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:1/health" }
+    tasks:
+      backup:
+        - run: { argv: [backup.sh] }
 `
 
 type harness struct {

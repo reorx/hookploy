@@ -163,6 +163,65 @@ table.rows tr:hover td { background: #f0f4ff40; }
 .exec-lines { list-style: none; margin: 8px 0; padding: 0; }
 .exec-lines li { display: flex; gap: 10px; align-items: center; padding: 2px 0; font-size: 13px; }
 
+/* ── service detail ─────────────────────────────────── */
+.page-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.page-head h1 { margin: 0; font-size: 20px; }
+
+.rollout { display: flex; align-items: flex-start; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.wave {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 160px;
+}
+.wave-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.wave-arrow { align-self: center; color: var(--st-neutral); font-size: 18px; }
+.inst-card { border-top: 1px solid var(--border); padding: 6px 0; }
+.inst-card:first-of-type { border-top: none; }
+.inst-name { font-weight: 600; font-size: 13px; }
+.inst-server { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.inst-server .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.inst-server .dot.online { background: var(--st-succeeded); }
+.inst-server .dot.offline { background: var(--st-failed); }
+.inst-dir { font-size: 11px; }
+
+.pipeline {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+  counter-reset: step;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pipeline li {
+  counter-increment: step;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.pipeline li:first-child { border-top: none; }
+.pipeline li::before {
+  content: counter(step);
+  color: var(--st-neutral);
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 14px;
+}
+.op-name { font-weight: 600; }
+.op-arg { color: var(--muted); font-size: 12px; background: var(--bg); padding: 1px 6px; border-radius: 4px; }
+.task-name { margin: 12px 0 6px; font-size: 13px; }
+
 /* ── log window ─────────────────────────────────────── */
 .log-window {
   background: #16181d;

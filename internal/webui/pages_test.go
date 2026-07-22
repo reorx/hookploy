@@ -164,6 +164,58 @@ func TestDashboardFragment(t *testing.T) {
 	}
 }
 
+// Behavior: the service page shows the rollout×instance topology, the deploy
+// pipeline with op names and args, tasks, and the deploy history.
+func TestServicePage(t *testing.T) {
+	h := newHarness(t)
+	h.login(h.adminToken)
+	d := h.mkDeploy("multi", model.StatusSucceeded)
+
+	resp := h.get("/ui/services/multi")
+	if resp.StatusCode != 200 {
+		t.Fatalf("service page: %d", resp.StatusCode)
+	}
+	body := h.body(resp)
+	// header facts
+	for _, want := range []string{"multi", "ghcr.io/x/multi", "10m0s"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("header missing %q", want)
+		}
+	}
+	// rollout topology: both waves, instance cards with server + dir
+	for _, want := range []string{"wave 1", "wave 2", "m-a", "m-b", "/opt/m-a", "/opt/m-b", "s2"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("topology missing %q", want)
+		}
+	}
+	// pipeline ops in order, args rendered
+	for _, want := range []string{"compose.pull", "compose.up", "healthcheck", "http://127.0.0.1:1/health"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("pipeline missing %q", want)
+		}
+	}
+	if strings.Index(body, "compose.pull") > strings.Index(body, "healthcheck") {
+		t.Fatal("pipeline steps out of order")
+	}
+	// tasks
+	for _, want := range []string{"backup", "backup.sh"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tasks missing %q", want)
+		}
+	}
+	// history row links to the deploy detail
+	if !strings.Contains(body, "/ui/deploys/"+d.ID) {
+		t.Fatal("history missing deploy link")
+	}
+
+	// unknown service → 404
+	resp = h.get("/ui/services/ghost")
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown service: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 // Behavior: a logged-in dashboard request renders the layout shell with the
 // static assets wired up.
 func TestDashboardShell(t *testing.T) {

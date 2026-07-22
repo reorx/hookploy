@@ -70,6 +70,43 @@ type DeployRow struct {
 	Duration  string // "—" when not applicable (superseded/queued)
 }
 
+// ServicePage feeds the service detail page.
+type ServicePage struct {
+	Name    string
+	Image   string
+	Webhook bool
+	Timeout string
+	Waves   [][]InstanceCard // rollout topology: waves × instances
+	Deploy  []StepView
+	Tasks   []TaskView
+	History []DeployRow
+}
+
+// InstanceCard is one instance inside the rollout topology.
+type InstanceCard struct {
+	Name   string
+	Server string
+	Dir    string
+	Online bool
+}
+
+// StepView is one pipeline step with its args flattened for display.
+type StepView struct {
+	Op   string
+	Args []KV
+}
+
+// KV is one rendered argument.
+type KV struct {
+	K, V string
+}
+
+// TaskView is one named task pipeline.
+type TaskView struct {
+	Name  string
+	Steps []StepView
+}
+
 // KindLabel renders a deploy's kind: "deploy" or "task:<name>".
 func KindLabel(kind, task string) string {
 	if task != "" {

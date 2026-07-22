@@ -1,11 +1,16 @@
 package webui
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 
 	"github.com/a-h/templ"
+	"github.com/reorx/hookploy/internal/config"
 	"github.com/reorx/hookploy/internal/model"
+	"github.com/reorx/hookploy/internal/ops"
+	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/version"
 	"github.com/reorx/hookploy/internal/webui/views"
 )
@@ -130,7 +135,104 @@ func deployRow(d *model.Deploy) views.DeployRow {
 }
 
 func (s *Server) handleServicePage(w http.ResponseWriter, r *http.Request) {
-	http.NotFound(w, r) // implemented in M4 step 6
+	name := r.PathValue("name")
+	svc := s.Config().Services[name]
+	if svc == nil {
+		http.NotFound(w, r)
+		return
+	}
+	page, err := s.servicePage(svc)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, r, http.StatusOK, views.ServiceDetail(s.serverChips(), page))
+}
+
+func (s *Server) servicePage(svc *config.Service) (views.ServicePage, error) {
+	page := views.ServicePage{
+		Name:    svc.Name,
+		Image:   svc.Image,
+		Webhook: svc.Webhook,
+		Timeout: svc.Timeout.String(),
+	}
+	online := map[string]bool{}
+	for _, chip := range s.serverChips() {
+		online[chip.Name] = chip.Online
+	}
+	for _, wave := range svc.Rollout {
+		cards := make([]views.InstanceCard, 0, len(wave))
+		for _, iname := range wave {
+			inst := svc.Instance(iname)
+			cards = append(cards, views.InstanceCard{
+				Name: inst.Name, Server: inst.Server, Dir: inst.Dir, Online: online[inst.Server],
+			})
+		}
+		page.Waves = append(page.Waves, cards)
+	}
+	var err error
+	if page.Deploy, err = stepViews(svc.Deploy); err != nil {
+		return page, err
+	}
+	taskNames := make([]string, 0, len(svc.Tasks))
+	for tname := range svc.Tasks {
+		taskNames = append(taskNames, tname)
+	}
+	sort.Strings(taskNames)
+	for _, tname := range taskNames {
+		steps, err := stepViews(svc.Tasks[tname])
+		if err != nil {
+			return page, err
+		}
+		page.Tasks = append(page.Tasks, views.TaskView{Name: tname, Steps: steps})
+	}
+	history, err := s.Store.ListDeploys(svc.Name, scheduler.RetainPerService)
+	if err != nil {
+		return page, err
+	}
+	for _, d := range history {
+		page.History = append(page.History, deployRow(d))
+	}
+	return page, nil
+}
+
+// stepViews flattens each op's typed args into sorted k=v pairs for display.
+func stepViews(steps []ops.Step) ([]views.StepView, error) {
+	out := make([]views.StepView, 0, len(steps))
+	for _, st := range steps {
+		sv := views.StepView{Op: st.Op}
+		if st.Args != nil {
+			b, err := json.Marshal(st.Args)
+			if err != nil {
+				return nil, err
+			}
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err != nil {
+				return nil, err
+			}
+			keys := make([]string, 0, len(m))
+			for k := range m {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				sv.Args = append(sv.Args, views.KV{K: k, V: argValue(m[k])})
+			}
+		}
+		out = append(out, sv)
+	}
+	return out, nil
+}
+
+func argValue(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
 }
 
 func (s *Server) handleDeployPage(w http.ResponseWriter, r *http.Request) {

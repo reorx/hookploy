@@ -30,6 +30,21 @@ services:
       - compose.up
       - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
 
+  # Bug B 真机复现：单 wave 三实例。s1 先串行跑（digest 解析位），
+  # 然后 s2（慢，~25s 成功）与 f1（秒级失败）并行——f1 失败后 deploy.status
+  # 立即 failed，而 s2 仍在运行并持续产生日志，构成 status=failed 但
+  # rollout 未结束的窗口，用于验证 logs -f / Web UI 不提前退出
+  echo_bugb:
+    dir: /opt/apps/hookploy_test/bugb/slow
+    deploy:
+      - run: { argv: ["/bin/sh", "./task.sh"] }
+    instances:
+      s1: { server: ali-hk-01 }
+      s2: { server: ali-hk-01 }
+      f1: { server: ali-hk-01, dir: /opt/apps/hookploy_test/bugb/fast }
+    rollout:
+      - [s1, s2, f1]
+
   # 多实例混合 rollout：wave 1 本机（local executor）→ wave 2 edge（gRPC）
   echo_multi:
     dir: /opt/apps/echo_server

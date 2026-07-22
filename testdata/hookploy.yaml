@@ -11,11 +11,15 @@ servers:
 defaults:
   timeout: 10m
 
+github:
+  webhook_secret: example-webhook-secret
+
 services:
   linkmind:
     server: ali-hk-01
     dir: /opt/apps/linkmind
     image: ghcr.io/reorx/linkmind
+    github_repo: reorx/linkmind
     deploy:
       - image.pin
       - compose.up

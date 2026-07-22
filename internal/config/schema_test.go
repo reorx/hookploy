@@ -471,6 +471,7 @@ var schemaSyncCases = []struct {
 	keyFields []string
 }{
 	{name: "rawFile", ptr: "#", raw: &rawFile{}},
+	{name: "rawGithub", ptr: "#/properties/github", raw: &rawGithub{}},
 	{name: "Listen", ptr: "#/properties/listen", raw: &Listen{}},
 	{name: "rawDefaults", ptr: "#/properties/defaults", raw: &rawDefaults{}},
 	{name: "rawServer", ptr: "#/definitions/server", raw: &rawServer{}},

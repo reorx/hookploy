@@ -38,6 +38,7 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hooks/{service}", s.handleWebhook)
+	mux.HandleFunc("POST /github/webhook", s.handleGitHubWebhook)
 	mux.HandleFunc("GET /deploys", s.admin(s.handleRecentDeploys))
 	mux.HandleFunc("GET /deploys/{id}", s.admin(s.handleGetDeploy))
 	mux.HandleFunc("GET /deploys/{id}/logs", s.admin(s.handleLogs))

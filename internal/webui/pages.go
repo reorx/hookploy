@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/a-h/templ"
 	"github.com/reorx/hookploy/internal/config"
@@ -83,7 +84,105 @@ func (s *Server) dashboardData() (views.DashboardData, error) {
 	for _, d := range recent {
 		data.Recent = append(data.Recent, deployRow(d))
 	}
+	active, err := s.Store.ListActiveWorkflowRuns()
+	if err != nil {
+		return data, err
+	}
+	data.Actions = workflowRunRows(active, repoServices(cfg))
 	return data, nil
+}
+
+// repoServices maps each declared github_repo (lowercased) to its service.
+// Should two services share a repo, the first in ServiceNames order wins.
+func repoServices(cfg *config.Config) map[string]string {
+	out := map[string]string{}
+	for _, name := range cfg.ServiceNames {
+		repo := strings.ToLower(cfg.Services[name].GithubRepo)
+		if repo == "" {
+			continue
+		}
+		if _, ok := out[repo]; !ok {
+			out[repo] = name
+		}
+	}
+	return out
+}
+
+func workflowRunRows(runs []*model.WorkflowRun, services map[string]string) []views.WorkflowRunRow {
+	out := make([]views.WorkflowRunRow, 0, len(runs))
+	for _, wr := range runs {
+		row := views.WorkflowRunRow{
+			ID:        wr.ID,
+			Repo:      wr.Repo,
+			Service:   services[strings.ToLower(wr.Repo)],
+			Workflow:  wr.WorkflowName,
+			RunNumber: wr.RunNumber,
+			Badge:     views.RunBadge(wr.Status, wr.Conclusion),
+			Branch:    wr.HeadBranch,
+			SHA:       wr.HeadSHA,
+			Event:     wr.Event,
+			Actor:     wr.Actor,
+			Title:     wr.DisplayTitle,
+			HTMLURL:   wr.HTMLURL,
+			CreatedAt: wr.CreatedAt,
+			Duration:  "—",
+		}
+		if wr.RunStartedAt != nil {
+			if wr.Status == "completed" {
+				end := wr.UpdatedAt
+				row.Duration = views.Elapsed(*wr.RunStartedAt, &end)
+			} else {
+				row.Duration = views.Elapsed(*wr.RunStartedAt, nil)
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func (s *Server) handleActionsPage(w http.ResponseWriter, r *http.Request) {
+	page, err := s.actionsData(r.URL.Query().Get("service"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, r, http.StatusOK, views.Actions(offlineCount(s.serverRows()), page))
+}
+
+func (s *Server) handleActionsFragment(w http.ResponseWriter, r *http.Request) {
+	page, err := s.actionsData(r.URL.Query().Get("service"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, r, http.StatusOK, views.ActionsContent(page))
+}
+
+// actionsData assembles /ui/actions. A filter naming an unknown service or
+// one without github_repo yields an empty list rather than a 404 — the
+// config can change under a polling page.
+func (s *Server) actionsData(filter string) (views.ActionsPage, error) {
+	cfg := s.Config()
+	page := views.ActionsPage{Filter: filter}
+	for _, name := range cfg.ServiceNames {
+		if cfg.Services[name].GithubRepo != "" {
+			page.Services = append(page.Services, name)
+		}
+	}
+	repo := ""
+	if filter != "" {
+		if svc := cfg.Services[filter]; svc != nil && svc.GithubRepo != "" {
+			repo = svc.GithubRepo
+		} else {
+			return page, nil
+		}
+	}
+	runs, err := s.Store.ListWorkflowRuns(repo, 50)
+	if err != nil {
+		return page, err
+	}
+	page.Runs = workflowRunRows(runs, repoServices(cfg))
+	return page, nil
 }
 
 // activeCard assembles the in-progress card: per-execution lines plus the
@@ -157,10 +256,11 @@ func (s *Server) handleServicePage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) servicePage(svc *config.Service) (views.ServicePage, error) {
 	page := views.ServicePage{
-		Name:    svc.Name,
-		Image:   svc.Image,
-		Webhook: svc.Webhook,
-		Timeout: svc.Timeout.String(),
+		Name:       svc.Name,
+		Image:      svc.Image,
+		Webhook:    svc.Webhook,
+		GithubRepo: svc.GithubRepo,
+		Timeout:    svc.Timeout.String(),
 	}
 	online := map[string]bool{}
 	for _, row := range s.serverRows() {
@@ -191,6 +291,13 @@ func (s *Server) servicePage(svc *config.Service) (views.ServicePage, error) {
 			return page, err
 		}
 		page.Tasks = append(page.Tasks, views.TaskView{Name: tname, Steps: steps})
+	}
+	if svc.GithubRepo != "" {
+		runs, err := s.Store.ListWorkflowRuns(svc.GithubRepo, 20)
+		if err != nil {
+			return page, err
+		}
+		page.Actions = workflowRunRows(runs, nil)
 	}
 	history, err := s.Store.ListDeploys(svc.Name, scheduler.RetainPerService)
 	if err != nil {

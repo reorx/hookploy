@@ -146,6 +146,28 @@ type EdgeInfo struct {
 	ConnectedAt time.Time
 }
 
+// WorkflowRun is one GitHub Actions run received via the workflow_run
+// webhook. ID is GitHub's run id and the upsert key; UpdatedAt guards
+// against out-of-order deliveries.
+type WorkflowRun struct {
+	ID           int64
+	Repo         string // repository.full_name, owner/repo
+	WorkflowName string
+	RunNumber    int
+	Status       string // queued | in_progress | completed | waiting | pending | requested
+	Conclusion   string // success | failure | cancelled | ...; empty until completed
+	HeadBranch   string
+	HeadSHA      string
+	HTMLURL      string
+	Event        string // triggering event: push, pull_request, ...
+	Actor        string
+	DisplayTitle string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	RunStartedAt *time.Time // nil while the run is still queued
+	ReceivedAt   time.Time
+}
+
 // NewDeployID returns a fresh dp_ id.
 func NewDeployID() string { return newID("dp_") }
 

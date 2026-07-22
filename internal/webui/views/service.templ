@@ -10,6 +10,9 @@ templ ServiceDetail(offline int, p ServicePage) {
 			if p.Image != "" {
 				<span class="mono muted">{ p.Image }</span>
 			}
+			if p.GithubRepo != "" {
+				<a class="mono muted" href={ templ.URL("https://github.com/" + p.GithubRepo) } target="_blank" rel="noopener">{ p.GithubRepo }</a>
+			}
 			<span class="muted">{ "timeout " + p.Timeout }</span>
 		</div>
 		<section class="section">
@@ -45,6 +48,23 @@ templ ServiceDetail(offline int, p ServicePage) {
 				for _, t := range p.Tasks {
 					<h3 class="task-name mono">{ t.Name }</h3>
 					@pipeline(t.Steps)
+				}
+			</section>
+		}
+		if p.GithubRepo != "" {
+			<section class="section">
+				<div class="section-head">
+					<h2>近期构建</h2>
+					<a class="muted" href={ templ.URL("/ui/actions?service=" + p.Name) }>全部构建 →</a>
+				</div>
+				if len(p.Actions) == 0 {
+					<p class="empty">还没有收到任何构建事件</p>
+				} else {
+					<table class="rows">
+						<tbody>
+							@runRows(p.Actions, false)
+						</tbody>
+					</table>
 				}
 			</section>
 		}

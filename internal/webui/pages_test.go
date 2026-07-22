@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func (h *harness) body(resp *http.Response) string {
 // redirected to the login page.
 func TestPagesRequireSession(t *testing.T) {
 	h := newHarness(t)
-	for _, path := range []string{"/ui/", "/ui/services/svc", "/ui/deploys/dp_x"} {
+	for _, path := range []string{"/ui/", "/ui/services/svc", "/ui/deploys/dp_x", "/ui/actions"} {
 		resp := h.get(path)
 		if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
 			t.Fatalf("GET %s anonymous: %d, want redirect", path, resp.StatusCode)
@@ -352,5 +353,144 @@ func TestDashboardShell(t *testing.T) {
 			t.Fatalf("GET %s: %d", path, resp.StatusCode)
 		}
 		resp.Body.Close()
+	}
+}
+
+// mkWorkflowRun seeds one workflow run; ids double as minutes so ordering
+// stays deterministic (whole-second timestamps sort correctly as TEXT).
+func (h *harness) mkWorkflowRun(id int64, repo, status, conclusion string) *model.WorkflowRun {
+	h.t.Helper()
+	at := time.Unix(1753178400+id*60, 0)
+	started := at.Add(5 * time.Second)
+	wr := &model.WorkflowRun{
+		ID:           id,
+		Repo:         repo,
+		WorkflowName: "CI",
+		RunNumber:    int(id),
+		Status:       status,
+		Conclusion:   conclusion,
+		HeadBranch:   "master",
+		HeadSHA:      "0123456789abcdef0123456789abcdef01234567",
+		HTMLURL:      "https://github.com/" + repo + "/actions/runs/" + strconv.FormatInt(id, 10),
+		Event:        "push",
+		Actor:        "reorx",
+		DisplayTitle: "commit " + strconv.FormatInt(id, 10),
+		CreatedAt:    at,
+		UpdatedAt:    at,
+		RunStartedAt: &started,
+		ReceivedAt:   at,
+	}
+	if err := h.ui.Store.UpsertWorkflowRun(wr); err != nil {
+		h.t.Fatal(err)
+	}
+	return wr
+}
+
+// Behavior: the dashboard shows in-progress workflow runs with a GitHub link
+// and the mapped service; completed runs stay out, and the whole section
+// disappears when nothing is running.
+func TestDashboardActions(t *testing.T) {
+	h := newHarness(t)
+	h.login(h.adminToken)
+
+	body := h.body(h.get("/ui/"))
+	if strings.Contains(body, "Actions 进行中") {
+		t.Fatal("actions section should be absent while nothing runs")
+	}
+
+	h.mkWorkflowRun(1, "reorx/multi", "in_progress", "")
+	h.mkWorkflowRun(2, "reorx/multi", "completed", "success")
+
+	body = h.body(h.get("/ui/"))
+	for _, want := range []string{
+		"Actions 进行中",
+		"https://github.com/reorx/multi/actions/runs/1",
+		"/ui/services/multi",
+		"CI",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard actions missing %q", want)
+		}
+	}
+	if strings.Contains(body, "actions/runs/2") {
+		t.Fatal("completed run must not show as active")
+	}
+	// the polled fragment carries the section too
+	frag := h.body(h.get("/ui/fragments/dashboard"))
+	if !strings.Contains(frag, "Actions 进行中") {
+		t.Fatal("dashboard fragment missing actions section")
+	}
+}
+
+// Behavior: /ui/actions lists recent runs of every repo (unmapped repos
+// included, with an empty service cell), newest first, with workflow name,
+// branch and status badge; ?service= filters via the service's github_repo,
+// and a service without one gets an empty-state hint. The anonymous fragment
+// answers 401.
+func TestActionsPage(t *testing.T) {
+	h := newHarness(t)
+	resp := h.get("/ui/fragments/actions")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous fragment: %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	h.login(h.adminToken)
+	h.mkWorkflowRun(1, "reorx/multi", "completed", "success")
+	h.mkWorkflowRun(2, "reorx/unmapped", "in_progress", "")
+
+	body := h.body(h.get("/ui/actions"))
+	for _, want := range []string{
+		"reorx/multi", "reorx/unmapped", "CI", "master",
+		"st-succeeded", "st-running",
+		"https://github.com/reorx/multi/actions/runs/1",
+		"/ui/services/multi",
+		"?service=multi", // filter link for the mapped service
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("actions page missing %q", want)
+		}
+	}
+	if strings.Index(body, "actions/runs/2") > strings.Index(body, "actions/runs/1") {
+		t.Fatal("runs must be newest first")
+	}
+
+	body = h.body(h.get("/ui/actions?service=multi"))
+	if !strings.Contains(body, "actions/runs/1") || strings.Contains(body, "actions/runs/2") {
+		t.Fatalf("service filter leaked other repos: %s", body)
+	}
+	if !strings.Contains(body, `data-poll="/ui/fragments/actions?service=multi"`) {
+		t.Fatal("fragment poll URL must keep the filter")
+	}
+
+	body = h.body(h.get("/ui/actions?service=svc"))
+	if strings.Contains(body, "actions/runs/") {
+		t.Fatal("service without github_repo must list nothing")
+	}
+	if !strings.Contains(body, "没有") {
+		t.Fatalf("empty state hint missing: %s", body)
+	}
+}
+
+// Behavior: a service with github_repo shows its repo in the header and a
+// recent-builds section; a service without one renders neither.
+func TestServicePageActions(t *testing.T) {
+	h := newHarness(t)
+	h.login(h.adminToken)
+	h.mkWorkflowRun(1, "reorx/multi", "completed", "failure")
+
+	body := h.body(h.get("/ui/services/multi"))
+	for _, want := range []string{
+		"近期构建", "reorx/multi", "st-failed",
+		"https://github.com/reorx/multi/actions/runs/1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("service page missing %q", want)
+		}
+	}
+
+	body = h.body(h.get("/ui/services/svc"))
+	if strings.Contains(body, "近期构建") {
+		t.Fatal("service without github_repo must not render the builds section")
 	}
 }

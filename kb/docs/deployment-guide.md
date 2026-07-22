@@ -91,6 +91,8 @@ hookploy.example.com {
 }
 ```
 
+HTTP 口上的所有路径（`/hooks/*`、admin API、`/ui/`、`/github/webhook`）同 listener，整口反代即可；其中 `/github/webhook`（§3.6，可选）需要 GitHub 能从公网访问到。
+
 ### 3.4 Token 初始化（main 本机执行，直接操作 SQLite）
 
 ```sh
@@ -114,6 +116,35 @@ cd /opt/apps/hookploy
 ```
 
 立即返回 202 + `deploy_id`，部署异步执行；需要等结果时轮询 `GET /deploys/<id>`。
+
+### 3.6 GitHub workflow_run webhook（构建状态回传，可选）
+
+与 §3.5 的方向相反：让 GitHub 把 Actions 构建状态**推给** hookploy，Web UI 便能展示各服务的构建情况（dashboard 进行中构建、`/ui/actions` 构建列表、服务详情页近期构建）。不需要 GitHub token、不轮询 GitHub API。
+
+配置两处：
+
+```yaml
+github:
+  webhook_secret: "<随机字符串>"   # HMAC 校验密钥；未配置时端点关闭（404）
+services:
+  myapp:
+    github_repo: reorx/myapp       # 把该 repo 的构建关联到本服务
+```
+
+GitHub 侧（repo Settings → Webhooks → Add webhook）：
+
+- Payload URL：`https://hookploy.example.com/github/webhook`
+- Content type：`application/json`
+- Secret：与 `github.webhook_secret` 一致
+- 事件：选 "Let me select individual events"，只勾 **Workflow runs**
+
+说明：
+
+- 每次投递用 `X-Hub-Signature-256` HMAC 校验，签名不对返回 401 不落库；`ping` 与其他事件类型一律返回 200（GitHub 侧不会标红），但只有 `workflow_run` 会被记录。
+- 同一 run 的多次投递（requested → in_progress → completed）按 run id 就地更新，乱序投递不会把状态改回去。
+- 每个 repo 保留最近 200 条构建记录，自动清理。
+- 多个 repo 可以指向不同服务；未被任何服务 `github_repo` 引用的 repo 事件也会保存，在 `/ui/actions` 可见（service 列为空）。
+- 两个 key 都支持热 reload（§6），改完 `-/reload` 即生效。
 
 ## 4. 多机部署（main + edge）
 
@@ -230,7 +261,7 @@ token 管理命令（`token` / `server token` / `admin-token`，均支持 `--jso
 
 main 内置只读 Web 界面：浏览器访问 `https://hookploy.example.com/ui/`（根路径 `/` 自动跳转），用 admin token 登录。登录后种下 HttpOnly 会话 cookie（7 天有效，main 重启失效需重新登录）；该 cookie 只对 GET 类端点生效，所有触发/reload 操作仍必须 Bearer token——UI 本身不提供任何写操作。
 
-页面结构：Dashboard（进行中部署卡片含实时日志尾部、服务器清单——在线状态/版本/edge 连接时长、服务清单、近期发布——被去重的 superseded 触发也在列）→ 服务详情（rollout×实例拓扑、deploy/tasks 流水线定义、历史）→ 部署详情（按波次的执行时间线、op 耗时与退出码、日志查看器：实时跟随、按实例过滤、op 行点击定位日志）。顶栏平时保持安静，仅当有服务器离线时显示红色警示徽章。
+页面结构：Dashboard（进行中部署卡片含实时日志尾部、进行中的 GitHub Actions 构建——仅在有构建时出现、服务器清单——在线状态/版本/edge 连接时长、服务清单、近期发布——被去重的 superseded 触发也在列）→ Actions（`/ui/actions`：近期构建列表，可按 service 过滤，需 §3.6 的 workflow_run webhook 接入）→ 服务详情（rollout×实例拓扑、deploy/tasks 流水线定义、近期构建——声明了 `github_repo` 的服务、历史）→ 部署详情（按波次的执行时间线、op 耗时与退出码、日志查看器：实时跟随、按实例过滤、op 行点击定位日志）。顶栏平时保持安静，仅当有服务器离线时显示红色警示徽章。
 
 **安全注意**：`/ui` 与 admin API 同 listener 同鉴权，把 UI 暴露公网等于暴露 admin API。建议仅内网访问，或反代层加护（IP 白名单 / basic auth / VPN）。
 

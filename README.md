@@ -203,6 +203,8 @@ token 管理类命令仅限 main 本机执行（直接操作 SQLite，admin API 
 
 main 内置只读 Web 界面（随单 binary 分发，零外部依赖）：浏览器访问 `http://<main>/ui/`（`/` 自动跳转），用 admin token 登录换取会话 cookie。Dashboard 展示进行中部署（含实时日志尾部）、服务器在线状态、服务清单与近期发布（被去重的 superseded 触发也可见），顶栏在有服务器离线时显示警示徽章；钻取服务详情（rollout 拓扑、流水线定义）与部署详情（波次执行时间线、op 耗时/退出码、终端风日志查看器，支持实时跟随与按实例过滤）。
 
+还可接收 GitHub `workflow_run` webhook 展示各服务的 Actions 构建状态（零 GitHub token、不轮询 GitHub API）：配置顶层 `github.webhook_secret` 与服务的 `github_repo: owner/repo`，在 GitHub repo 给 `POST /github/webhook` 配一个只勾 Workflow runs 的 webhook 即可——dashboard 显示进行中的构建，`/ui/actions` 列近期构建并按服务过滤，服务详情页展示该 repo 的近期构建。
+
 UI 与 admin API 同 listener：暴露 `/ui` 到公网即暴露 admin API（同源同鉴权），建议反代加护或仅内网访问；v1 只读，不提供任何触发操作。
 
 ## op 词汇表

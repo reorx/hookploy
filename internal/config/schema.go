@@ -97,6 +97,17 @@ func JSONSchema() ([]byte, error) {
 				Type:        "boolean",
 				Description: "是否挂载内置只读 Web UI（/ui/），默认 true；false 时 /ui/ 与根路径跳转均不注册，改动需重启 main 生效。",
 			},
+			"github": {
+				Type:        "object",
+				Description: "GitHub 集成：接收 workflow_run webhook，在 Web UI 展示构建状态。",
+				Properties: map[string]*jsonSchema{
+					"webhook_secret": {
+						Type:        "string",
+						Description: "GitHub webhook 的 HMAC secret（X-Hub-Signature-256 校验）；未配置时 POST /github/webhook 端点关闭（404）。",
+					},
+				},
+				AdditionalProperties: false,
+			},
 			"servers": {
 				Type:                 "object",
 				Description:          "部署目标服务器。键为 server 名，edge 的身份由 server token 的 subject 推导。",
@@ -168,6 +179,11 @@ func serviceSchema() *jsonSchema {
 			"webhook": {
 				Type:        "boolean",
 				Description: "是否接受 webhook 触发，默认 true；false 表示只能手动部署。",
+			},
+			"github_repo": {
+				Type:        "string",
+				Pattern:     `^[^/\s]+/[^/\s]+$`,
+				Description: "关联的 GitHub 仓库（owner/repo），用于把 workflow_run 事件关联到本服务并在 UI 展示构建。",
 			},
 			"timeout": durationRef("单次执行超时，覆盖 defaults.timeout。"),
 			"deploy":  pipeline("默认部署流水线，webhook 触发时执行。"),

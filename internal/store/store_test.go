@@ -580,3 +580,171 @@ func TestLatestDeploys(t *testing.T) {
 		t.Fatalf("latest wrong: %+v", latest)
 	}
 }
+
+func mkRun(t *testing.T, s *Store, id int64, repo, status, conclusion string, at time.Time) *model.WorkflowRun {
+	t.Helper()
+	wr := &model.WorkflowRun{
+		ID:           id,
+		Repo:         repo,
+		WorkflowName: "CI",
+		RunNumber:    int(id),
+		Status:       status,
+		Conclusion:   conclusion,
+		HeadBranch:   "master",
+		HeadSHA:      "abcdef1234567890abcdef1234567890abcdef12",
+		HTMLURL:      fmt.Sprintf("https://github.com/%s/actions/runs/%d", repo, id),
+		Event:        "push",
+		Actor:        "reorx",
+		DisplayTitle: "some commit",
+		CreatedAt:    at,
+		UpdatedAt:    at,
+		ReceivedAt:   at,
+	}
+	if err := s.UpsertWorkflowRun(wr); err != nil {
+		t.Fatal(err)
+	}
+	return wr
+}
+
+// Behavior: workflow runs upsert by GitHub run id — a later delivery of the
+// same run updates the row in place instead of adding one.
+func TestWorkflowRunUpsert(t *testing.T) {
+	s := openTest(t)
+	base := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	wr := mkRun(t, s, 1, "reorx/hookploy", "in_progress", "", base)
+
+	started := base.Add(10 * time.Second)
+	wr.Status, wr.Conclusion = "completed", "success"
+	wr.UpdatedAt = base.Add(time.Minute)
+	wr.RunStartedAt = &started
+	if err := s.UpsertWorkflowRun(wr); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := s.ListWorkflowRuns("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("want 1 row after upsert, got %d", len(runs))
+	}
+	got := runs[0]
+	if got.Status != "completed" || got.Conclusion != "success" {
+		t.Fatalf("row not updated: %+v", got)
+	}
+	if got.RunStartedAt == nil || !got.RunStartedAt.Equal(started) {
+		t.Fatalf("run_started_at lost: %+v", got.RunStartedAt)
+	}
+	if got.Repo != "reorx/hookploy" || got.HeadBranch != "master" || got.Actor != "reorx" {
+		t.Fatalf("fields lost: %+v", got)
+	}
+}
+
+// Behavior: a late event carrying an older updated_at never regresses a
+// fresher row (completed stays completed).
+func TestWorkflowRunOutOfOrder(t *testing.T) {
+	s := openTest(t)
+	base := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	wr := mkRun(t, s, 1, "reorx/hookploy", "in_progress", "", base)
+
+	wr.Status, wr.Conclusion = "completed", "success"
+	wr.UpdatedAt = base.Add(2 * time.Minute)
+	if err := s.UpsertWorkflowRun(wr); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := *wr
+	stale.Status, stale.Conclusion = "in_progress", ""
+	stale.UpdatedAt = base.Add(time.Minute)
+	if err := s.UpsertWorkflowRun(&stale); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := s.ListWorkflowRuns("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Status != "completed" || runs[0].Conclusion != "success" {
+		t.Fatalf("stale event regressed the row: %+v", runs[0])
+	}
+}
+
+// Behavior: ListWorkflowRuns filters by repo case-insensitively, returns
+// newest first, honors the limit; empty repo means every repo.
+func TestWorkflowRunList(t *testing.T) {
+	s := openTest(t)
+	base := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	mkRun(t, s, 1, "reorx/hookploy", "completed", "success", base)
+	mkRun(t, s, 2, "reorx/hookploy", "completed", "failure", base.Add(time.Minute))
+	mkRun(t, s, 3, "reorx/other", "in_progress", "", base.Add(2*time.Minute))
+
+	runs, err := s.ListWorkflowRuns("Reorx/Hookploy", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].ID != 2 || runs[1].ID != 1 {
+		t.Fatalf("repo filter/order wrong: %+v", runs)
+	}
+
+	all, err := s.ListWorkflowRuns("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].ID != 3 {
+		t.Fatalf("empty repo should list every repo newest first: %+v", all)
+	}
+
+	top, err := s.ListWorkflowRuns("", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(top) != 1 || top[0].ID != 3 {
+		t.Fatalf("limit wrong: %+v", top)
+	}
+}
+
+// Behavior: ListActiveWorkflowRuns returns only runs that have not completed.
+func TestWorkflowRunActive(t *testing.T) {
+	s := openTest(t)
+	base := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	mkRun(t, s, 1, "reorx/hookploy", "completed", "success", base)
+	mkRun(t, s, 2, "reorx/hookploy", "in_progress", "", base.Add(time.Minute))
+	mkRun(t, s, 3, "reorx/other", "queued", "", base.Add(2*time.Minute))
+
+	active, err := s.ListActiveWorkflowRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 2 || active[0].ID != 3 || active[1].ID != 2 {
+		t.Fatalf("active runs wrong: %+v", active)
+	}
+}
+
+// Behavior: CleanupWorkflowRuns keeps the newest `keep` runs of one repo and
+// leaves other repos alone.
+func TestWorkflowRunCleanup(t *testing.T) {
+	s := openTest(t)
+	base := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	for i := int64(1); i <= 5; i++ {
+		mkRun(t, s, i, "reorx/hookploy", "completed", "success", base.Add(time.Duration(i)*time.Minute))
+	}
+	mkRun(t, s, 100, "reorx/other", "completed", "success", base)
+
+	if err := s.CleanupWorkflowRuns("reorx/hookploy", 3); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.ListWorkflowRuns("reorx/hookploy", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 3 || runs[0].ID != 5 || runs[2].ID != 3 {
+		t.Fatalf("cleanup kept wrong rows: %+v", runs)
+	}
+	other, err := s.ListWorkflowRuns("reorx/other", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other) != 1 {
+		t.Fatalf("cleanup touched another repo: %+v", other)
+	}
+}

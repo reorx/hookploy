@@ -19,6 +19,7 @@ templ Layout(title string, offline int, crumbs []Crumb) {
 		<body>
 			<header class="topbar">
 				<a class="logo" href="/ui/">hookploy</a>
+				<a class="topnav" href="/ui/actions">actions</a>
 				if len(crumbs) > 0 {
 					<nav class="crumbs">
 						for _, c := range crumbs {

@@ -29,6 +29,7 @@ services:
       - run: { argv: [x] }
   multi:
     image: ghcr.io/x/multi
+    github_repo: reorx/multi
     instances:
       m-a: { server: s1, dir: /opt/m-a }
       m-b: { server: s2, dir: /opt/m-b }

@@ -15,9 +15,14 @@ type rawFile struct {
 	Listen   Listen                 `yaml:"listen"`
 	DB       string                 `yaml:"db"`
 	WebUI    *bool                  `yaml:"webui"`
+	Github   rawGithub              `yaml:"github"`
 	Servers  map[string]rawServer   `yaml:"servers"`
 	Defaults rawDefaults            `yaml:"defaults"`
 	Services map[string]*rawService `yaml:"services"`
+}
+
+type rawGithub struct {
+	WebhookSecret string `yaml:"webhook_secret"`
 }
 
 type rawServer struct {
@@ -29,15 +34,16 @@ type rawDefaults struct {
 }
 
 type rawService struct {
-	Server    string                 `yaml:"server"`
-	Dir       string                 `yaml:"dir"`
-	Image     string                 `yaml:"image"`
-	Webhook   *bool                  `yaml:"webhook"`
-	Timeout   model.Duration         `yaml:"timeout"`
-	Deploy    []yaml.Node            `yaml:"deploy"`
-	Tasks     map[string][]yaml.Node `yaml:"tasks"`
-	Instances []rawInstance          `yaml:"instances"` // order preserved
-	Rollout   [][]string             `yaml:"rollout"`
+	Server     string                 `yaml:"server"`
+	Dir        string                 `yaml:"dir"`
+	Image      string                 `yaml:"image"`
+	Webhook    *bool                  `yaml:"webhook"`
+	GithubRepo string                 `yaml:"github_repo"`
+	Timeout    model.Duration         `yaml:"timeout"`
+	Deploy     []yaml.Node            `yaml:"deploy"`
+	Tasks      map[string][]yaml.Node `yaml:"tasks"`
+	Instances  []rawInstance          `yaml:"instances"` // order preserved
+	Rollout    [][]string             `yaml:"rollout"`
 }
 
 type rawInstance struct {
@@ -49,21 +55,23 @@ type rawInstance struct {
 // instancesNode decodes the `instances:` mapping preserving declaration order.
 func (rs *rawService) UnmarshalYAML(node *yaml.Node) error {
 	type plain struct {
-		Server    string                 `yaml:"server"`
-		Dir       string                 `yaml:"dir"`
-		Image     string                 `yaml:"image"`
-		Webhook   *bool                  `yaml:"webhook"`
-		Timeout   model.Duration         `yaml:"timeout"`
-		Deploy    []yaml.Node            `yaml:"deploy"`
-		Tasks     map[string][]yaml.Node `yaml:"tasks"`
-		Instances yaml.Node              `yaml:"instances"`
-		Rollout   []yaml.Node            `yaml:"rollout"`
+		Server     string                 `yaml:"server"`
+		Dir        string                 `yaml:"dir"`
+		Image      string                 `yaml:"image"`
+		Webhook    *bool                  `yaml:"webhook"`
+		GithubRepo string                 `yaml:"github_repo"`
+		Timeout    model.Duration         `yaml:"timeout"`
+		Deploy     []yaml.Node            `yaml:"deploy"`
+		Tasks      map[string][]yaml.Node `yaml:"tasks"`
+		Instances  yaml.Node              `yaml:"instances"`
+		Rollout    []yaml.Node            `yaml:"rollout"`
 	}
 	var p plain
 	if err := decodeStrictNode(node, &p); err != nil {
 		return err
 	}
 	rs.Server, rs.Dir, rs.Image, rs.Webhook, rs.Timeout = p.Server, p.Dir, p.Image, p.Webhook, p.Timeout
+	rs.GithubRepo = p.GithubRepo
 	rs.Deploy, rs.Tasks = p.Deploy, p.Tasks
 
 	if p.Instances.Kind != 0 {

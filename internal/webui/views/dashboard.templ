@@ -32,6 +32,22 @@ templ DashboardContent(data DashboardData) {
 			}
 		}
 	</section>
+	if len(data.Actions) > 0 {
+		<section class="section">
+			<div class="section-head">
+				<h2>
+					Actions 进行中
+					<span class="count">({ fmt.Sprint(len(data.Actions)) })</span>
+				</h2>
+				<a class="muted" href="/ui/actions">全部构建 →</a>
+			</div>
+			<table class="rows">
+				<tbody>
+					@runRows(data.Actions, true)
+				</tbody>
+			</table>
+		</section>
+	}
 	<section class="section">
 		<h2>服务器</h2>
 		<table class="rows">

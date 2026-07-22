@@ -119,6 +119,56 @@ services:
 	}
 }
 
+// Behavior: top-level `github.webhook_secret` and service `github_repo`
+// load into the normalized config; both are empty when omitted.
+func TestGithubConfig(t *testing.T) {
+	cfg, err := load(t, `
+github:
+  webhook_secret: s3cret
+`+minimalServers+`
+services:
+  app: { server: s1, dir: /opt/a, deploy: [compose.up], github_repo: reorx/hookploy }
+  bare: { server: s1, dir: /opt/b, deploy: [compose.up] }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Github.WebhookSecret != "s3cret" {
+		t.Fatalf("webhook secret: %q", cfg.Github.WebhookSecret)
+	}
+	if cfg.Services["app"].GithubRepo != "reorx/hookploy" {
+		t.Fatalf("github_repo: %q", cfg.Services["app"].GithubRepo)
+	}
+	if cfg.Services["bare"].GithubRepo != "" {
+		t.Fatalf("omitted github_repo should be empty: %q", cfg.Services["bare"].GithubRepo)
+	}
+
+	cfg, err = load(t, minimalServers+`
+services:
+  app: { server: s1, dir: /opt/a, deploy: [compose.up] }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Github.WebhookSecret != "" {
+		t.Fatalf("omitted github section should leave secret empty: %q", cfg.Github.WebhookSecret)
+	}
+}
+
+// Behavior: a github_repo that is not owner/repo is rejected with the
+// service name in the message.
+func TestGithubRepoFormat(t *testing.T) {
+	for _, bad := range []string{"foo", "a/b/c", "/b", "a/", "a b/c"} {
+		_, err := load(t, minimalServers+`
+services:
+  app: { server: s1, dir: /opt/a, deploy: [compose.up], github_repo: "`+bad+`" }
+`)
+		if err == nil || !strings.Contains(err.Error(), `service "app"`) || !strings.Contains(err.Error(), "github_repo") {
+			t.Fatalf("github_repo %q: want service-scoped error, got %v", bad, err)
+		}
+	}
+}
+
 // Behavior: static validation rejects every misconfiguration class,
 // with the file (and line where applicable) in the message.
 func TestValidateErrors(t *testing.T) {

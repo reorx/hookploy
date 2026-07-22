@@ -1,0 +1,59 @@
+package views
+
+import "fmt"
+
+templ Actions(offline int, page ActionsPage) {
+	@Layout("hookploy — actions", offline, []Crumb{{Label: "actions"}}) {
+		<div class="page-head">
+			<h1>Actions</h1>
+			<span class="muted refresh-note">3s 自动刷新</span>
+		</div>
+		<div id="actions" data-poll={ ActionsPollURL(page.Filter) }>
+			@ActionsContent(page)
+		</div>
+	}
+}
+
+templ ActionsContent(page ActionsPage) {
+	<nav class="filter-bar">
+		<a class={ "filter", templ.KV("active", page.Filter == "") } href="/ui/actions">全部</a>
+		for _, name := range page.Services {
+			<a class={ "filter", templ.KV("active", page.Filter == name) } href={ templ.URL("/ui/actions?service=" + name) }>{ name }</a>
+		}
+	</nav>
+	if len(page.Runs) == 0 {
+		<p class="empty">还没有收到任何构建事件</p>
+	} else {
+		<table class="rows">
+			<tbody>
+				@runRows(page.Runs, true)
+			</tbody>
+		</table>
+	}
+}
+
+// runRows renders workflow-run table rows; withRepo also shows the repo and
+// mapped-service columns (the service page drops them — they are constant).
+templ runRows(runs []WorkflowRunRow, withRepo bool) {
+	for _, r := range runs {
+		<tr>
+			<td class="mono muted">{ Clock(r.CreatedAt) }</td>
+			if withRepo {
+				<td class="mono muted">{ r.Repo }</td>
+				<td>
+					if r.Service != "" {
+						<a class="svc-name" href={ templ.URL("/ui/services/" + r.Service) }>{ r.Service }</a>
+					}
+				</td>
+			}
+			<td class="muted">{ r.Workflow + " " + fmt.Sprintf("#%d", r.RunNumber) }</td>
+			<td class="run-title">{ r.Title }</td>
+			<td class="mono muted">{ r.Branch + "@" + ShortSHA(r.SHA) }</td>
+			<td>
+				@StatusBadge(r.Badge)
+			</td>
+			<td class="mono muted">{ r.Duration }</td>
+			<td><a href={ templ.URL(r.HTMLURL) } target="_blank" rel="noopener">GitHub ↗</a></td>
+		</tr>
+	}
+}

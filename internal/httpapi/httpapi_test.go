@@ -27,6 +27,8 @@ import (
 )
 
 const testConfig = `
+github:
+  webhook_secret: ` + testWebhookSecret + `
 servers:
   s1: { local: true }
 services:
@@ -34,6 +36,7 @@ services:
     server: s1
     dir: /opt/apps/linkmind
     image: ghcr.io/reorx/linkmind
+    github_repo: reorx/linkmind
     deploy:
       - run: { argv: [deploy-linkmind] }
   condenser:

@@ -47,7 +47,7 @@ func Layout(title string, offline int, crumbs []Crumb) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><link rel=\"stylesheet\" href=\"/ui/static/app.css\"><script src=\"/ui/static/app.js\" defer></script><script src=\"/ui/static/logs.js\" defer></script></head><body><header class=\"topbar\"><a class=\"logo\" href=\"/ui/\">hookploy</a> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><link rel=\"stylesheet\" href=\"/ui/static/app.css\"><script src=\"/ui/static/app.js\" defer></script><script src=\"/ui/static/logs.js\" defer></script></head><body><header class=\"topbar\"><a class=\"logo\" href=\"/ui/\">hookploy</a> <a class=\"topnav\" href=\"/ui/actions\">actions</a> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -69,7 +69,7 @@ func Layout(title string, offline int, crumbs []Crumb) templ.Component {
 					var templ_7745c5c3_Var3 templ.SafeURL
 					templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(c.Href))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 27, Col: 35}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 28, Col: 35}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 					if templ_7745c5c3_Err != nil {
@@ -82,7 +82,7 @@ func Layout(title string, offline int, crumbs []Crumb) templ.Component {
 					var templ_7745c5c3_Var4 string
 					templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(c.Label)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 27, Col: 47}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 28, Col: 47}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 					if templ_7745c5c3_Err != nil {
@@ -100,7 +100,7 @@ func Layout(title string, offline int, crumbs []Crumb) templ.Component {
 					var templ_7745c5c3_Var5 string
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(c.Label)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 29, Col: 23}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 30, Col: 23}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
@@ -129,7 +129,7 @@ func Layout(title string, offline int, crumbs []Crumb) templ.Component {
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("● %d 台服务器离线", offline))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 36, Col: 133}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 37, Col: 133}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {

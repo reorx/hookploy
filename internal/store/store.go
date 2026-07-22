@@ -107,6 +107,28 @@ CREATE TABLE op_logs (
 );
 CREATE INDEX idx_op_logs_exec ON op_logs(execution_id, id);
 `,
+	`
+CREATE TABLE workflow_runs (
+	id             INTEGER PRIMARY KEY,
+	repo           TEXT NOT NULL COLLATE NOCASE,
+	workflow_name  TEXT NOT NULL DEFAULT '',
+	run_number     INTEGER NOT NULL DEFAULT 0,
+	status         TEXT NOT NULL,
+	conclusion     TEXT NOT NULL DEFAULT '',
+	head_branch    TEXT NOT NULL DEFAULT '',
+	head_sha       TEXT NOT NULL DEFAULT '',
+	html_url       TEXT NOT NULL DEFAULT '',
+	event          TEXT NOT NULL DEFAULT '',
+	actor          TEXT NOT NULL DEFAULT '',
+	display_title  TEXT NOT NULL DEFAULT '',
+	created_at     TEXT NOT NULL,
+	updated_at     TEXT NOT NULL,
+	run_started_at TEXT,
+	received_at    TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_runs_repo ON workflow_runs(repo, created_at DESC);
+CREATE INDEX idx_workflow_runs_status ON workflow_runs(status);
+`,
 }
 
 func migrate(db *sql.DB) error {

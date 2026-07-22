@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/reorx/hookploy/internal/model"
@@ -20,10 +21,17 @@ type Config struct {
 	Listen         Listen
 	DB             string
 	WebUI          bool
+	Github         Github
 	Servers        map[string]*Server
 	DefaultTimeout time.Duration
 	Services       map[string]*Service
 	ServiceNames   []string // sorted, for stable listings
+}
+
+// Github holds the GitHub integration settings. The webhook endpoint
+// (POST /github/webhook) stays closed until WebhookSecret is set.
+type Github struct {
+	WebhookSecret string
 }
 
 type Listen struct {
@@ -45,14 +53,15 @@ type Instance struct {
 
 // Service is a normalized service definition: always instances + rollout.
 type Service struct {
-	Name      string
-	Image     string
-	Webhook   bool
-	Timeout   time.Duration
-	Deploy    []ops.Step
-	Tasks     map[string][]ops.Step
-	Instances []Instance
-	Rollout   [][]string // waves of instance names
+	Name       string
+	Image      string
+	Webhook    bool
+	GithubRepo string // owner/repo, links workflow_run events to this service
+	Timeout    time.Duration
+	Deploy     []ops.Step
+	Tasks      map[string][]ops.Step
+	Instances  []Instance
+	Rollout    [][]string // waves of instance names
 }
 
 // Instance returns the named instance, or nil.
@@ -95,6 +104,7 @@ func parse(data []byte) (*Config, error) {
 		Listen:         raw.Listen,
 		DB:             raw.DB,
 		WebUI:          raw.WebUI == nil || *raw.WebUI,
+		Github:         Github{WebhookSecret: raw.Github.WebhookSecret},
 		Servers:        map[string]*Server{},
 		DefaultTimeout: defaultTimeout,
 		Services:       map[string]*Service{},
@@ -130,13 +140,21 @@ func normalizeService(name string, rs *rawService, cfg *Config) (*Service, error
 	}
 
 	svc := &Service{
-		Name:    name,
-		Image:   rs.Image,
-		Webhook: rs.Webhook == nil || *rs.Webhook,
-		Timeout: cfg.DefaultTimeout,
+		Name:       name,
+		Image:      rs.Image,
+		Webhook:    rs.Webhook == nil || *rs.Webhook,
+		GithubRepo: rs.GithubRepo,
+		Timeout:    cfg.DefaultTimeout,
 	}
 	if rs.Timeout != 0 {
 		svc.Timeout = time.Duration(rs.Timeout)
+	}
+	if svc.GithubRepo != "" {
+		owner, repo, ok := strings.Cut(svc.GithubRepo, "/")
+		if !ok || owner == "" || repo == "" ||
+			strings.ContainsAny(svc.GithubRepo, " \t") || strings.Contains(repo, "/") {
+			return nil, fail("github_repo must look like \"owner/repo\", got %q", svc.GithubRepo)
+		}
 	}
 
 	// instances / server sugar

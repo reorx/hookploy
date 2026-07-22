@@ -5,6 +5,7 @@ package views
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 )
 
@@ -26,9 +27,35 @@ type Crumb struct {
 // DashboardData feeds the dashboard's sections.
 type DashboardData struct {
 	Active   []ActiveDeploy
+	Actions  []WorkflowRunRow // in-progress GitHub Actions runs
 	Servers  []ServerRow
 	Services []ServiceRow
 	Recent   []DeployRow
+}
+
+// WorkflowRunRow is one GitHub Actions run in a list.
+type WorkflowRunRow struct {
+	ID        int64
+	Repo      string
+	Service   string // mapped via the service's github_repo; "" when unmapped
+	Workflow  string
+	RunNumber int
+	Badge     string // status folded into the st-* badge vocabulary
+	Branch    string
+	SHA       string // 7 chars
+	Event     string
+	Actor     string
+	Title     string
+	HTMLURL   string
+	CreatedAt time.Time
+	Duration  string // "—" until the run started
+}
+
+// ActionsPage feeds /ui/actions.
+type ActionsPage struct {
+	Filter   string   // selected service name, "" = all
+	Services []string // services that declare github_repo, filter options
+	Runs     []WorkflowRunRow
 }
 
 // ActiveDeploy is one in-progress deploy card.
@@ -75,14 +102,16 @@ type DeployRow struct {
 
 // ServicePage feeds the service detail page.
 type ServicePage struct {
-	Name    string
-	Image   string
-	Webhook bool
-	Timeout string
-	Waves   [][]InstanceCard // rollout topology: waves × instances
-	Deploy  []StepView
-	Tasks   []TaskView
-	History []DeployRow
+	Name       string
+	Image      string
+	Webhook    bool
+	GithubRepo string
+	Timeout    string
+	Waves      [][]InstanceCard // rollout topology: waves × instances
+	Deploy     []StepView
+	Tasks      []TaskView
+	Actions    []WorkflowRunRow // recent builds, github_repo services only
+	History    []DeployRow
 }
 
 // InstanceCard is one instance inside the rollout topology.
@@ -213,6 +242,47 @@ func Elapsed(start time.Time, end *time.Time) string {
 	default:
 		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 	}
+}
+
+// RunBadge folds a GitHub run's status/conclusion pair into the UI's st-*
+// badge vocabulary so Actions rows color like deploy rows.
+func RunBadge(status, conclusion string) string {
+	switch status {
+	case "completed":
+		switch conclusion {
+		case "success":
+			return "succeeded"
+		case "failure", "timed_out", "startup_failure":
+			return "failed"
+		case "cancelled":
+			return "canceled"
+		case "":
+			return "completed"
+		default: // neutral, skipped, action_required, ...
+			return conclusion
+		}
+	case "in_progress":
+		return "running"
+	case "queued", "waiting", "pending", "requested":
+		return "queued"
+	}
+	return status
+}
+
+// ShortSHA compacts a commit sha to its usual 7-char form.
+func ShortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// ActionsPollURL is the fragment URL of /ui/actions carrying the filter.
+func ActionsPollURL(filter string) string {
+	if filter == "" {
+		return "/ui/fragments/actions"
+	}
+	return "/ui/fragments/actions?service=" + url.QueryEscape(filter)
 }
 
 // ShortDigest compacts "sha256:abcdef..." to "abcdef012345" (12 hex chars).

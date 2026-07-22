@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -263,6 +264,106 @@ func TestRecoverInFlightCancelsGatedWaves(t *testing.T) {
 	if err != nil || st != model.StatusFailed {
 		t.Fatalf("recovered deploy must reach a terminal status: %s err=%v", st, err)
 	}
+}
+
+// mkRollout creates a deploy with one execution per given instance name,
+// each in its own wave, and forces their statuses. Used to reconstruct the
+// exact on-disk shapes a crash can leave behind.
+func mkRollout(t *testing.T, s *Store, service string, deployStatus model.Status, execStatuses ...model.Status) (*model.Deploy, []*model.Execution) {
+	t.Helper()
+	d := &model.Deploy{
+		ID: model.NewDeployID(), Service: service, Kind: model.KindDeploy,
+		Payload: json.RawMessage(`{}`), Status: model.StatusQueued, CreatedAt: time.Now(),
+	}
+	var execs []*model.Execution
+	for i := range execStatuses {
+		execs = append(execs, &model.Execution{
+			ID: model.NewExecutionID(), DeployID: d.ID, Service: service,
+			Instance: service + "-" + strconv.Itoa(i), Server: "s1", Dir: "/opt/x", Wave: i,
+			OpsJSON: json.RawMessage(`[{"op":"compose.up"}]`),
+			Timeout: model.Duration(10 * time.Minute),
+			Status:  model.StatusQueued, CreatedAt: time.Now(),
+		})
+	}
+	if err := s.CreateDeploy(d, execs); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range execStatuses {
+		if want == model.StatusQueued {
+			continue
+		}
+		if _, err := s.db.Exec("UPDATE executions SET status = ? WHERE id = ?", string(want), execs[i].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec("UPDATE deploys SET status = ? WHERE id = ?", string(deployStatus), d.ID); err != nil {
+		t.Fatal(err)
+	}
+	return d, execs
+}
+
+// Behavior: a crash can leave an interrupted rollout with no dispatching or
+// running execution at all — the process died between marking wave 1 failed
+// and canceling the waves it gated, or between two waves. Nothing reschedules
+// those (the scheduler only re-runs deploys that never started), so recovery
+// must sweep them by deploy, not by looking for in-flight executions.
+func TestRecoverSweepsInterruptedRolloutsWithNoInFlightExecutions(t *testing.T) {
+	// W2: died between "wave 1 failed" and "cancel wave 2".
+	t.Run("failure not yet propagated to gated wave", func(t *testing.T) {
+		s := openTest(t)
+		d, execs := mkRollout(t, s, "svc", model.StatusFailed, model.StatusFailed, model.StatusQueued)
+		if _, err := s.RecoverInFlight("main restarted"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.GetExecution(execs[1].ID)
+		if got.Status != model.StatusCanceled {
+			t.Fatalf("gated wave should be canceled, got %s", got.Status)
+		}
+		st, _ := s.RecomputeDeployStatus(d.ID)
+		if st != model.StatusFailed {
+			t.Fatalf("deploy status = %s, want failed", st)
+		}
+		if cur, _ := s.GetDeploy(d.ID); cur.FinishedAt == nil {
+			t.Fatal("interrupted rollout must reach a finished state, not strand forever")
+		}
+	})
+
+	// W1: died between two waves — wave 1 succeeded, wave 2 never dispatched.
+	t.Run("died between waves", func(t *testing.T) {
+		s := openTest(t)
+		d, execs := mkRollout(t, s, "svc", model.StatusRunning, model.StatusSucceeded, model.StatusQueued)
+		if _, err := s.RecoverInFlight("main restarted"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.GetExecution(execs[1].ID)
+		if got.Status != model.StatusCanceled {
+			t.Fatalf("undispatched wave should be canceled, got %s", got.Status)
+		}
+		s.RecomputeDeployStatus(d.ID)
+		cur, _ := s.GetDeploy(d.ID)
+		if cur.FinishedAt == nil {
+			t.Fatal("rollout interrupted between waves must not stay running forever")
+		}
+		if !cur.Status.Terminal() {
+			t.Fatalf("deploy should be terminal, got %s", cur.Status)
+		}
+	})
+
+	// A deploy that already finished must not be touched.
+	t.Run("finished deploy untouched", func(t *testing.T) {
+		s := openTest(t)
+		d, execs := mkRollout(t, s, "svc", model.StatusSucceeded, model.StatusSucceeded)
+		if _, err := s.db.Exec("UPDATE deploys SET finished_at = ? WHERE id = ?", now(), d.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RecoverInFlight("main restarted"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.GetExecution(execs[0].ID)
+		if got.Status != model.StatusSucceeded {
+			t.Fatalf("finished deploy's execution changed to %s", got.Status)
+		}
+	})
 }
 
 // Behavior: recovery must not touch a deploy that never started — those are

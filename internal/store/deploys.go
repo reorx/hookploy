@@ -218,17 +218,6 @@ func (s *Store) execStatuses(deployID string) ([]model.Status, error) {
 	return statuses, rows.Err()
 }
 
-// DeploySettled reports whether every execution of a deploy has reached a
-// terminal status. The deploy's own status goes failed as soon as one
-// instance fails, so it cannot be used to tell that a rollout is over.
-func (s *Store) DeploySettled(deployID string) (bool, error) {
-	statuses, err := s.execStatuses(deployID)
-	if err != nil {
-		return false, err
-	}
-	return model.AllTerminal(statuses), nil
-}
-
 // RecomputeDeployStatus aggregates execution statuses into the deploy row
 // and notifies followers when the deploy reaches a terminal state.
 func (s *Store) RecomputeDeployStatus(deployID string) (model.Status, error) {
@@ -297,11 +286,23 @@ func (s *Store) CleanupService(service string, keep int) error {
 	return err
 }
 
-// RecoverInFlight fails all dispatching/running executions (used at startup:
-// their executors died with the previous process). Returns affected deploy ids.
+// RecoverInFlight closes out every rollout the previous process left
+// unfinished (used at startup). Returns affected deploy ids.
+//
+// It sweeps by deploy rather than by in-flight execution: a crash can land
+// between marking one wave failed and canceling the waves it gated, or
+// between two waves, leaving a started rollout with no dispatching or running
+// execution at all. Nothing else would ever close those — the scheduler only
+// reschedules deploys that never started — so they would strand short of
+// finished, and a `running` one would not even be cleaned up by retention.
+//
+// Deploys that never started are left alone: they still hold nothing but
+// queued executions and are rescheduled wholesale by Scheduler.Recover.
 func (s *Store) RecoverInFlight(reason string) ([]string, error) {
 	rows, err := s.db.Query(
-		"SELECT DISTINCT deploy_id FROM executions WHERE status IN ('dispatching','running')")
+		`SELECT DISTINCT d.id FROM deploys d JOIN executions e ON e.deploy_id = d.id
+		 WHERE d.finished_at IS NULL AND e.status IN ('queued','dispatching','running')
+		   AND (d.status != 'queued' OR e.status IN ('dispatching','running'))`)
 	if err != nil {
 		return nil, err
 	}
@@ -318,18 +319,18 @@ func (s *Store) RecoverInFlight(reason string) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.db.Exec(
-		"UPDATE executions SET status = 'failed', error = ?, finished_at = ? WHERE status IN ('dispatching','running')",
-		reason, now()); err != nil {
-		return nil, err
-	}
-	// Waves gated behind those executions will never be dispatched — the
-	// scheduler only reschedules deploys that never started. Cancel them so
-	// the deploy can reach a terminal status instead of stranding queued
-	// executions under a finished rollout.
 	for _, id := range ids {
+		// Their executors died with the previous process.
 		if _, err := s.db.Exec(
-			"UPDATE executions SET status = ?, error = ?, finished_at = ? WHERE deploy_id = ? AND status = ?",
+			`UPDATE executions SET status = 'failed', error = ?, finished_at = ?
+			 WHERE deploy_id = ? AND status IN ('dispatching','running')`,
+			reason, now(), id); err != nil {
+			return nil, err
+		}
+		// Waves gated behind them will never be dispatched.
+		if _, err := s.db.Exec(
+			`UPDATE executions SET status = ?, error = ?, finished_at = ?
+			 WHERE deploy_id = ? AND status = ?`,
 			string(model.StatusCanceled), reason, now(), id, string(model.StatusQueued)); err != nil {
 			return nil, err
 		}

@@ -64,7 +64,9 @@ func (s *Server) dashboardData() (views.DashboardData, error) {
 		}
 		if d := latest[name]; d != nil {
 			row.LastID, row.LastStatus, row.LastAt = d.ID, string(d.Status), d.CreatedAt
-			if !d.Status.Terminal() {
+			// finished_at, not the status: a rollout whose first instance
+			// failed still reads failed while its siblings run on.
+			if d.FinishedAt == nil {
 				card, err := s.activeCard(d)
 				if err != nil {
 					return data, err
@@ -282,7 +284,7 @@ func (s *Server) deployPage(id string) (views.DeployPage, bool, error) {
 		CreatedAt: d.CreatedAt,
 		Duration:  row.Duration,
 		Payload:   prettyPayload(d.Payload),
-		Terminal:  d.Status.Terminal(),
+		Terminal:  d.FinishedAt != nil,
 		ExecMap:   map[string]views.ExecMapEntry{},
 	}
 	execs, err := s.Store.ListExecutions(id)

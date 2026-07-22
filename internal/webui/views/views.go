@@ -121,7 +121,7 @@ type DeployPage struct {
 	CreatedAt time.Time
 	Duration  string
 	Payload   string // pretty-printed JSON, "" when trivial
-	Terminal  bool
+	Terminal  bool // the rollout is over (finished_at set), not merely a terminal status
 	Waves     []WaveView
 	Execs     []ExecOption            // filter dropdown
 	ExecMap   map[string]ExecMapEntry // for logs.js prefixes and anchors

@@ -29,6 +29,12 @@ func (h *harness) mkDeployExec(service string, status model.Status) (*model.Depl
 		Status:    status,
 		CreatedAt: time.Now(),
 	}
+	// A rollout that reached a terminal status has also finished — that is
+	// what the store writes, and the UI keys "is it over" off finished_at.
+	if status.Terminal() {
+		finished := time.Now()
+		d.FinishedAt = &finished
+	}
 	ex := &model.Execution{
 		ID:        model.NewExecutionID(),
 		DeployID:  d.ID,

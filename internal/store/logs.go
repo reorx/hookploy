@@ -119,16 +119,14 @@ func (s *Store) FollowDeploy(deployID string) (<-chan Event, func(), error) {
 			}
 			maxReplayed = l.ID
 		}
-		// Re-read status after subscribing: the deploy may have finished
-		// between GetDeploy and subscribe. A terminal status alone is not
-		// enough — it reads failed from the first dead instance onward, while
-		// its siblings keep running and logging, so settle on the executions.
+		// Re-read after subscribing: the deploy may have finished between
+		// GetDeploy and subscribe. Test finished_at, not the status — the
+		// status reads failed from the first dead instance onward, while its
+		// siblings keep running and logging.
 		cur, err := s.GetDeploy(deployID)
-		if err == nil && cur != nil && cur.Status.Terminal() {
-			if settled, serr := s.DeploySettled(deployID); serr == nil && settled {
-				send(Event{Done: true, Status: cur.Status})
-				return
-			}
+		if err == nil && cur != nil && cur.FinishedAt != nil {
+			send(Event{Done: true, Status: cur.Status})
+			return
 		}
 		for {
 			select {

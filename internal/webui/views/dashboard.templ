@@ -102,6 +102,7 @@ templ activeCard(a ActiveDeploy) {
 				</li>
 			}
 		</ul>
+		@templ.JSONScript("exec-map-"+a.ID, a.ExecMap)
 		<pre class="log-window card-mode" data-follow={ a.ID } data-mode="card"></pre>
 	</div>
 }

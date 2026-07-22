@@ -92,6 +92,7 @@ func (s *Server) activeCard(d *model.Deploy) (views.ActiveDeploy, error) {
 		Kind:      views.KindLabel(string(d.Kind), d.Task),
 		Status:    string(d.Status),
 		CreatedAt: d.CreatedAt,
+		ExecMap:   map[string]views.ExecMapEntry{},
 	}
 	execs, err := s.Store.ListExecutions(d.ID)
 	if err != nil {
@@ -108,6 +109,7 @@ func (s *Server) activeCard(d *model.Deploy) (views.ActiveDeploy, error) {
 		card.Execs = append(card.Execs, views.ExecLine{
 			Instance: ex.Instance, Server: ex.Server, Status: string(ex.Status), Wave: ex.Wave,
 		})
+		card.ExecMap[ex.ID] = execMapEntry(ex)
 	}
 	if current == -1 {
 		current = card.Waves - 1

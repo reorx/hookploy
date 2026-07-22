@@ -49,6 +49,7 @@
       el: el,
       ctrl: new AbortController(),
       mode: el.dataset.mode || 'card',
+      map: mapFor(el),
       seen: new Set(), // (exec:op) groups that got an anchor id
       lastKey: null,
       count: 0,
@@ -141,7 +142,7 @@
       state.lastKey = key;
       var p = document.createElement('span');
       p.className = 'prefix';
-      p.textContent = '[' + prefixFor(frame) + '] ';
+      p.textContent = '[' + prefixFor(state, frame) + '] ';
       span.appendChild(p);
     }
     span.appendChild(document.createTextNode(frame.data));
@@ -157,8 +158,23 @@
     if (state.mode === 'card' || state.pinned) state.el.scrollTop = state.el.scrollHeight;
   }
 
-  function prefixFor(frame) {
-    var entry = execMap[frame.execution_id];
+  // mapFor resolves the exec map for a window: the page-level #exec-map
+  // (detail pages) or the per-card #exec-map-<deploy-id> rendered next to
+  // dashboard cards. Ops snapshots never change, so reading once is enough.
+  function mapFor(el) {
+    var cardMap = document.getElementById('exec-map-' + el.dataset.follow);
+    if (cardMap) {
+      try {
+        return JSON.parse(cardMap.textContent);
+      } catch (e) {
+        /* fall through */
+      }
+    }
+    return execMap;
+  }
+
+  function prefixFor(state, frame) {
+    var entry = state.map[frame.execution_id];
     if (!entry) return frame.execution_id.slice(0, 8) + '/' + frame.op_index;
     var op = entry.ops[String(frame.op_index)] || frame.op_index;
     return entry.instance + '/' + op;

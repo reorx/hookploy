@@ -39,6 +39,7 @@ type ActiveDeploy struct {
 	Waves     int
 	CreatedAt time.Time
 	Execs     []ExecLine
+	ExecMap   map[string]ExecMapEntry // log prefix labels for the card window
 }
 
 // ExecLine is one execution inside an active card.

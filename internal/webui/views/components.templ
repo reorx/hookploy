@@ -1,0 +1,13 @@
+package views
+
+templ StatusBadge(status string) {
+	<span class={ "badge", "st-" + status }>{ status }</span>
+}
+
+templ webhookMark(enabled bool) {
+	if enabled {
+		<span class="webhook-mark on" title="webhook enabled">webhook ✓</span>
+	} else {
+		<span class="webhook-mark off" title="webhook disabled">webhook —</span>
+	}
+}

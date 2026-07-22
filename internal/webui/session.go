@@ -122,6 +122,19 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
 }
 
+// fragmentAuth guards fragment routes: they are fetched by JS, so an
+// unauthenticated request gets a plain 401 instead of a redirect (whose
+// login-page body would end up injected into the DOM).
+func (s *Server) fragmentAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.SessionValid(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // requireSession guards page routes: unauthenticated visitors are sent to
 // the login page.
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {

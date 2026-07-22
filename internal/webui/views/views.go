@@ -22,6 +22,67 @@ type Crumb struct {
 	Href  string
 }
 
+// DashboardData feeds the dashboard's three sections.
+type DashboardData struct {
+	Active   []ActiveDeploy
+	Services []ServiceRow
+	Recent   []DeployRow
+}
+
+// ActiveDeploy is one in-progress deploy card.
+type ActiveDeploy struct {
+	ID        string
+	Service   string
+	Kind      string // "deploy" | "task:<name>"
+	Status    string
+	Wave      int // 1-based current wave
+	Waves     int
+	CreatedAt time.Time
+	Execs     []ExecLine
+}
+
+// ExecLine is one execution inside an active card.
+type ExecLine struct {
+	Instance string
+	Server   string
+	Status   string
+	Wave     int
+}
+
+// ServiceRow is one row of the service list.
+type ServiceRow struct {
+	Name       string
+	Webhook    bool
+	Servers    []string
+	LastID     string
+	LastStatus string // empty when the service never deployed
+	LastAt     time.Time
+}
+
+// DeployRow is one row of the recent-deploys list and service history.
+type DeployRow struct {
+	ID        string
+	Service   string
+	Kind      string
+	Status    string
+	Digest    string
+	CreatedAt time.Time
+	Duration  string // "—" when not applicable (superseded/queued)
+}
+
+// KindLabel renders a deploy's kind: "deploy" or "task:<name>".
+func KindLabel(kind, task string) string {
+	if task != "" {
+		return kind + ":" + task
+	}
+	return kind
+}
+
+// Clock renders a compact absolute time for list rows.
+func Clock(t time.Time) string {
+	return t.Local().Format("01-02 15:04")
+}
+
 // Ago renders a compact relative time ("12s", "3m", "2h", "5d").
 func Ago(t time.Time) string {
 	d := time.Since(t)

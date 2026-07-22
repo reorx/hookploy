@@ -115,6 +115,73 @@ main { max-width: 1080px; margin: 0 auto; padding: 16px; }
   text-align: center;
 }
 
+/* ── sections & tables ──────────────────────────────── */
+.section { margin-bottom: 24px; }
+.section h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.section-head { display: flex; align-items: baseline; justify-content: space-between; }
+.section .count { color: var(--st-running); }
+.refresh-note { font-size: 11px; }
+.empty { color: var(--muted); font-size: 13px; margin: 4px 0; }
+
+table.rows {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.rows td {
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.rows tr:first-child td { border-top: none; }
+table.rows tr:hover td { background: #f0f4ff40; }
+.svc-name { font-weight: 600; color: var(--text); }
+.svc-name:hover { color: var(--accent); }
+.webhook-mark { font-size: 12px; }
+.webhook-mark.on { color: var(--st-succeeded); }
+.webhook-mark.off { color: var(--st-neutral); }
+
+/* ── active deploy card ─────────────────────────────── */
+.active-card {
+  background: var(--panel);
+  border: 1px solid var(--st-running);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.active-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.active-head .spacer { flex: 1; }
+.exec-lines { list-style: none; margin: 8px 0; padding: 0; }
+.exec-lines li { display: flex; gap: 10px; align-items: center; padding: 2px 0; font-size: 13px; }
+
+/* ── log window ─────────────────────────────────────── */
+.log-window {
+  background: #16181d;
+  color: #d4d7dd;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-window.card-mode { max-height: 10em; min-height: 3em; }
+.log-window .prefix { color: #7d8590; }
+.log-window .stderr { color: #f0883e; }
+.log-window .system { color: #7d8590; font-style: italic; }
+
 /* ── status badges ──────────────────────────────────── */
 .badge {
   display: inline-flex;

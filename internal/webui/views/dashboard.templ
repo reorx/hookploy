@@ -1,7 +1,107 @@
 package views
 
-templ Dashboard(servers []ServerChip) {
+import (
+	"fmt"
+	"strings"
+)
+
+templ Dashboard(servers []ServerChip, data DashboardData) {
 	@Layout("hookploy", servers, nil) {
-		<div id="dashboard" data-poll="/ui/fragments/dashboard"></div>
+		<div id="dashboard" data-poll="/ui/fragments/dashboard">
+			@DashboardContent(data)
+		</div>
 	}
+}
+
+templ DashboardContent(data DashboardData) {
+	<section class="section">
+		<div class="section-head">
+			<h2>
+				进行中
+				if len(data.Active) > 0 {
+					<span class="count">({ fmt.Sprint(len(data.Active)) })</span>
+				}
+			</h2>
+			<span class="muted refresh-note">3s 自动刷新</span>
+		</div>
+		if len(data.Active) == 0 {
+			<p class="empty">当前没有进行中的部署</p>
+		} else {
+			for _, a := range data.Active {
+				@activeCard(a)
+			}
+		}
+	</section>
+	<section class="section">
+		<h2>服务</h2>
+		<table class="rows">
+			<tbody>
+				for _, s := range data.Services {
+					<tr>
+						<td><a class="svc-name" href={ templ.URL("/ui/services/" + s.Name) }>{ s.Name }</a></td>
+						<td>@webhookMark(s.Webhook)</td>
+						<td class="mono muted">{ strings.Join(s.Servers, ", ") }</td>
+						<td>
+							if s.LastStatus != "" {
+								@StatusBadge(s.LastStatus)
+							} else {
+								<span class="muted">从未部署</span>
+							}
+						</td>
+						<td class="muted">
+							if s.LastStatus != "" {
+								{ Ago(s.LastAt) }
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</section>
+	<section class="section">
+		<h2>近期发布</h2>
+		if len(data.Recent) == 0 {
+			<p class="empty">还没有任何发布记录</p>
+		} else {
+			<table class="rows">
+				<tbody>
+					for _, d := range data.Recent {
+						<tr>
+							<td class="mono muted">{ Clock(d.CreatedAt) }</td>
+							<td><a href={ templ.URL("/ui/services/" + d.Service) }>{ d.Service }</a></td>
+							<td class="muted">{ d.Kind }</td>
+							<td>
+								@StatusBadge(d.Status)
+							</td>
+							<td class="mono muted">{ d.Duration }</td>
+							<td><a class="mono" href={ templ.URL("/ui/deploys/" + d.ID) }>{ d.ID }</a></td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	</section>
+}
+
+templ activeCard(a ActiveDeploy) {
+	<div class="active-card">
+		<div class="active-head">
+			<a class="svc-name" href={ templ.URL("/ui/services/" + a.Service) }>{ a.Service }</a>
+			<span class="mono muted">{ a.ID }</span>
+			@StatusBadge(a.Status)
+			<span class="muted">{ fmt.Sprintf("wave %d/%d", a.Wave, a.Waves) }</span>
+			<span class="muted">{ "开始于 " + Ago(a.CreatedAt) + " 前" }</span>
+			<div class="spacer"></div>
+			<a href={ templ.URL("/ui/deploys/" + a.ID) }>详情 →</a>
+		</div>
+		<ul class="exec-lines">
+			for _, e := range a.Execs {
+				<li>
+					<span class="mono">{ e.Instance + " @ " + e.Server }</span>
+					@StatusBadge(e.Status)
+				</li>
+			}
+		</ul>
+		<pre class="log-window card-mode" data-follow={ a.ID } data-mode="card"></pre>
+	</div>
 }

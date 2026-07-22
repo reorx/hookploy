@@ -1,12 +1,45 @@
 package webui
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/reorx/hookploy/internal/model"
 )
+
+// mkDeploy inserts a deploy with one execution for the configured service.
+func (h *harness) mkDeploy(service string, status model.Status) *model.Deploy {
+	h.t.Helper()
+	d := &model.Deploy{
+		ID:        model.NewDeployID(),
+		Service:   service,
+		Kind:      model.KindDeploy,
+		Payload:   json.RawMessage(`{}`),
+		Status:    status,
+		CreatedAt: time.Now(),
+	}
+	ex := &model.Execution{
+		ID:        model.NewExecutionID(),
+		DeployID:  d.ID,
+		Service:   service,
+		Instance:  service,
+		Server:    "s1",
+		Dir:       "/opt/svc",
+		OpsJSON:   json.RawMessage(`[{"op":"run","args":{"argv":["x"]}}]`),
+		Timeout:   model.Duration(10 * time.Minute),
+		Status:    status,
+		CreatedAt: time.Now(),
+	}
+	if err := h.ui.Store.CreateDeploy(d, []*model.Execution{ex}); err != nil {
+		h.t.Fatal(err)
+	}
+	return d
+}
 
 func (h *harness) body(resp *http.Response) string {
 	h.t.Helper()
@@ -67,6 +100,68 @@ func TestLoginPage(t *testing.T) {
 		t.Fatalf("redirect to %q, want /ui/", loc)
 	}
 	resp.Body.Close()
+}
+
+// Behavior: the dashboard shows the three sections — active deploys (only
+// non-terminal), the service list, and recent deploys including superseded.
+func TestDashboardSections(t *testing.T) {
+	h := newHarness(t)
+	h.login(h.adminToken)
+
+	// no deploys yet: empty-state text, service row still present
+	body := h.body(h.get("/ui/"))
+	if !strings.Contains(body, "当前没有进行中的部署") {
+		t.Fatalf("empty active state missing: %s", body)
+	}
+	if !strings.Contains(body, `/ui/services/svc`) {
+		t.Fatalf("service row link missing: %s", body)
+	}
+
+	done := h.mkDeploy("svc", model.StatusSucceeded)
+	sup := h.mkDeploy("svc", model.StatusSuperseded)
+	run := h.mkDeploy("svc", model.StatusRunning)
+
+	body = h.body(h.get("/ui/"))
+	if strings.Contains(body, "当前没有进行中的部署") {
+		t.Fatal("active section should show the running deploy")
+	}
+	// active card: deploy id, per-execution line, detail link, log window mount
+	for _, want := range []string{run.ID, "svc @ s1", "/ui/deploys/" + run.ID, `data-follow="` + run.ID + `"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("active card missing %q", want)
+		}
+	}
+	// recent section lists all three, superseded included
+	for _, want := range []string{done.ID, sup.ID, "superseded"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("recent section missing %q", want)
+		}
+	}
+}
+
+// Behavior: the dashboard fragment serves the sections without the layout
+// shell; without a session it answers 401 (no redirect — it's fetched by JS).
+func TestDashboardFragment(t *testing.T) {
+	h := newHarness(t)
+	resp := h.get("/ui/fragments/dashboard")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous fragment: %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	h.login(h.adminToken)
+	h.mkDeploy("svc", model.StatusSucceeded)
+	resp = h.get("/ui/fragments/dashboard")
+	if resp.StatusCode != 200 {
+		t.Fatalf("fragment: %d", resp.StatusCode)
+	}
+	body := h.body(resp)
+	if strings.Contains(body, "<html") {
+		t.Fatal("fragment must not include the layout shell")
+	}
+	if !strings.Contains(body, "/ui/services/svc") {
+		t.Fatalf("fragment missing service section: %s", body)
+	}
 }
 
 // Behavior: a logged-in dashboard request renders the layout shell with the

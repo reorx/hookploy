@@ -142,6 +142,150 @@ func TestRecomputeDeployStatus(t *testing.T) {
 	}
 }
 
+// Behavior: a failure surfaces on the deploy immediately, but the deploy is
+// only *finished* once every execution has settled — a follower must not be
+// told "done" while a later wave is still queued for cancellation.
+func TestRecomputeFailureIsLiveButNotFinishedEarly(t *testing.T) {
+	s := openTest(t)
+	d := &model.Deploy{
+		ID: model.NewDeployID(), Service: "svc", Kind: model.KindDeploy,
+		Payload: json.RawMessage(`{}`), Status: model.StatusQueued, CreatedAt: time.Now(),
+	}
+	mkExec := func(inst string, wave int) *model.Execution {
+		return &model.Execution{
+			ID: model.NewExecutionID(), DeployID: d.ID, Service: "svc", Instance: inst,
+			Server: "s1", Dir: "/opt/x", Wave: wave,
+			OpsJSON: json.RawMessage(`[{"op":"compose.up"}]`),
+			Timeout: model.Duration(10 * time.Minute),
+			Status:  model.StatusQueued, CreatedAt: time.Now(),
+		}
+	}
+	w1, w2 := mkExec("m0", 0), mkExec("sg0", 1)
+	if err := s.CreateDeploy(d, []*model.Execution{w1, w2}); err != nil {
+		t.Fatal(err)
+	}
+	events, stop, err := s.FollowDeploy(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	s.TransitionExecution(w1.ID, model.StatusQueued, model.StatusDispatching, "")
+	s.TransitionExecution(w1.ID, model.StatusDispatching, model.StatusRunning, "")
+	s.TransitionExecution(w1.ID, model.StatusRunning, model.StatusFailed, "boom")
+
+	// wave 2 is still queued: failure is visible, the rollout is not over.
+	st, err := s.RecomputeDeployStatus(d.ID)
+	if err != nil || st != model.StatusFailed {
+		t.Fatalf("failure should be visible right away: %s err=%v", st, err)
+	}
+	got, _ := s.GetDeploy(d.ID)
+	if got.Status != model.StatusFailed {
+		t.Fatalf("deploy status = %s, want failed", got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Fatal("deploy must not be finished while a wave is still queued")
+	}
+	select {
+	case ev := <-events:
+		if ev.Done {
+			t.Fatal("followers must not be told done before the rollout settles")
+		}
+	default:
+	}
+
+	// wave 2 canceled → now the rollout is over.
+	s.TransitionExecution(w2.ID, model.StatusQueued, model.StatusCanceled, "earlier wave failed")
+	if st, _ = s.RecomputeDeployStatus(d.ID); st != model.StatusFailed {
+		t.Fatalf("settled rollout = %s, want failed", st)
+	}
+	if got, _ = s.GetDeploy(d.ID); got.FinishedAt == nil {
+		t.Fatal("settled rollout should have finished_at")
+	}
+	for {
+		select {
+		case ev := <-events:
+			if ev.Done {
+				return // expected
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no done event after the rollout settled")
+		}
+	}
+}
+
+// Behavior: a restart mid-rollout leaves no execution able to transition —
+// in-flight ones fail, and the later waves they gated are canceled. Nothing
+// will ever run them again, so leaving them queued would strand the deploy
+// short of a terminal status.
+func TestRecoverInFlightCancelsGatedWaves(t *testing.T) {
+	s := openTest(t)
+	d := &model.Deploy{
+		ID: model.NewDeployID(), Service: "svc", Kind: model.KindDeploy,
+		Payload: json.RawMessage(`{}`), Status: model.StatusQueued, CreatedAt: time.Now(),
+	}
+	mkExec := func(inst string, wave int) *model.Execution {
+		return &model.Execution{
+			ID: model.NewExecutionID(), DeployID: d.ID, Service: "svc", Instance: inst,
+			Server: "s1", Dir: "/opt/x", Wave: wave,
+			OpsJSON: json.RawMessage(`[{"op":"compose.up"}]`),
+			Timeout: model.Duration(10 * time.Minute),
+			Status:  model.StatusQueued, CreatedAt: time.Now(),
+		}
+	}
+	w1, w2 := mkExec("m0", 0), mkExec("sg0", 1)
+	if err := s.CreateDeploy(d, []*model.Execution{w1, w2}); err != nil {
+		t.Fatal(err)
+	}
+	// wave 1 is running when the process dies; wave 2 never started.
+	s.TransitionExecution(w1.ID, model.StatusQueued, model.StatusDispatching, "")
+	s.TransitionExecution(w1.ID, model.StatusDispatching, model.StatusRunning, "")
+
+	ids, err := s.RecoverInFlight("main restarted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != d.ID {
+		t.Fatalf("affected deploys = %v, want [%s]", ids, d.ID)
+	}
+	got1, _ := s.GetExecution(w1.ID)
+	got2, _ := s.GetExecution(w2.ID)
+	if got1.Status != model.StatusFailed {
+		t.Fatalf("in-flight execution should fail: %s", got1.Status)
+	}
+	if got2.Status != model.StatusCanceled {
+		t.Fatalf("gated wave should be canceled, got %s", got2.Status)
+	}
+	if got2.FinishedAt == nil {
+		t.Fatal("canceled execution should have finished_at")
+	}
+	st, err := s.RecomputeDeployStatus(d.ID)
+	if err != nil || st != model.StatusFailed {
+		t.Fatalf("recovered deploy must reach a terminal status: %s err=%v", st, err)
+	}
+}
+
+// Behavior: recovery must not touch a deploy that never started — those are
+// rescheduled wholesale, so their queued executions stay runnable.
+func TestRecoverInFlightLeavesUnstartedDeploys(t *testing.T) {
+	s := openTest(t)
+	d, ex := mkDeploy(t, s, "svc")
+	ids, err := s.RecoverInFlight("main restarted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("no deploy was in flight, got %v", ids)
+	}
+	got, _ := s.GetExecution(ex.ID)
+	if got.Status != model.StatusQueued {
+		t.Fatalf("unstarted execution must stay queued, got %s", got.Status)
+	}
+	if d2, _ := s.GetDeploy(d.ID); d2.Status != model.StatusQueued {
+		t.Fatalf("unstarted deploy must stay queued, got %s", d2.Status)
+	}
+}
+
 // Behavior: per-service retention keeps the newest 50 terminal deploys;
 // logs vanish with their deploy (FK cascade).
 func TestRetention(t *testing.T) {

@@ -193,6 +193,31 @@ func (h *harness) waitStatus(id string, want model.Status) *model.Deploy {
 	return nil
 }
 
+// waitFinished waits for the rollout to actually settle (finished_at set),
+// not just for the status to show want. A failure surfaces on the deploy
+// before the waves it gated are canceled, so tests that inspect per-instance
+// state must wait for the end, not the first bad news.
+func (h *harness) waitFinished(id string, want model.Status) *model.Deploy {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		d, err := h.store.GetDeploy(id)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if d.FinishedAt != nil {
+			if d.Status != want {
+				h.t.Fatalf("deploy %s finished as %s, want %s (error: %s)", id, d.Status, want, d.Error)
+			}
+			return d
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	d, _ := h.store.GetDeploy(id)
+	h.t.Fatalf("timeout waiting for %s to finish (now %s)", id, d.Status)
+	return nil
+}
+
 // ── behaviors ──────────────────────────────────────────────────────────────
 
 // Behavior: deploys of the same service run strictly serially; a third
@@ -264,7 +289,9 @@ func TestWaveGatingAndCancel(t *testing.T) {
 	h2.fake.Rules[0].Exit = 1
 	svc2 := service("vf2", [][]string{{"m0"}, {"sg0"}}, `[{run: {argv: [deploy-step]}}]`)
 	d2 := h2.enqueue(svc2, "")
-	h2.waitStatus(d2.ID, model.StatusFailed)
+	// the failed status lands as soon as wave 1 fails; wave 2 is canceled a
+	// moment later, so settle on finished_at before reading per-instance state
+	h2.waitFinished(d2.ID, model.StatusFailed)
 	execs, _ := h2.store.ListExecutions(d2.ID)
 	byInst := map[string]model.Status{}
 	for _, ex := range execs {

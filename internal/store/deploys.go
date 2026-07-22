@@ -221,7 +221,12 @@ func (s *Store) RecomputeDeployStatus(deployID string) (model.Status, error) {
 		return "", err
 	}
 	agg := model.AggregateStatus(statuses)
-	if agg.Terminal() {
+	// The aggregate goes failed as soon as any instance fails, so followers
+	// see the bad news early — but the rollout is only over once every
+	// execution has settled. Stamping finished_at or publishing Done on the
+	// first failure would end the stream while later waves are still queued,
+	// leaving followers with a finished deploy holding unsettled instances.
+	if agg.Terminal() && model.AllTerminal(statuses) {
 		if _, err := s.db.Exec(
 			"UPDATE deploys SET status = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?",
 			string(agg), now(), deployID); err != nil {
@@ -301,6 +306,17 @@ func (s *Store) RecoverInFlight(reason string) ([]string, error) {
 		"UPDATE executions SET status = 'failed', error = ?, finished_at = ? WHERE status IN ('dispatching','running')",
 		reason, now()); err != nil {
 		return nil, err
+	}
+	// Waves gated behind those executions will never be dispatched — the
+	// scheduler only reschedules deploys that never started. Cancel them so
+	// the deploy can reach a terminal status instead of stranding queued
+	// executions under a finished rollout.
+	for _, id := range ids {
+		if _, err := s.db.Exec(
+			"UPDATE executions SET status = ?, error = ?, finished_at = ? WHERE deploy_id = ? AND status = ?",
+			string(model.StatusCanceled), reason, now(), id, string(model.StatusQueued)); err != nil {
+			return nil, err
+		}
 	}
 	return ids, nil
 }

@@ -126,6 +126,19 @@ func AggregateStatus(statuses []Status) Status {
 	return StatusRunning
 }
 
+// AllTerminal reports whether every execution has settled. A deploy's
+// aggregate can read failed while instances are still moving (a wave-1
+// failure surfaces before the later waves are canceled), so callers use this
+// to tell "something already failed" from "the rollout is over".
+func AllTerminal(statuses []Status) bool {
+	for _, s := range statuses {
+		if !s.Terminal() {
+			return false
+		}
+	}
+	return true
+}
+
 // EdgeInfo is the live state of one connected edge session.
 type EdgeInfo struct {
 	Server      string

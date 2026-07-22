@@ -70,3 +70,25 @@ func TestAggregateStatus(t *testing.T) {
 		}
 	}
 }
+
+// Behavior: a failed aggregate does not mean the rollout is over — later
+// waves are still queued for the moment it takes to cancel them.
+func TestAllTerminal(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []Status
+		want bool
+	}{
+		{"failure with a later wave still queued", []Status{StatusFailed, StatusQueued}, false},
+		{"failure with a sibling still running", []Status{StatusFailed, StatusRunning}, false},
+		{"failure once the rest is canceled", []Status{StatusFailed, StatusCanceled}, true},
+		{"all succeeded", []Status{StatusSucceeded, StatusSucceeded}, true},
+		{"dispatching is not settled", []Status{StatusDispatching}, false},
+		{"empty", nil, true},
+	}
+	for _, c := range cases {
+		if got := AllTerminal(c.in); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}

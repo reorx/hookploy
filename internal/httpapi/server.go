@@ -28,6 +28,10 @@ type Server struct {
 	Reload func() error
 	// Edges reports currently connected edge sessions (nil in M1 setups).
 	Edges func() map[string]model.EdgeInfo
+	// SessionOK reports whether the request carries a valid web UI session
+	// cookie (nil when the UI is not mounted). Only consulted for GET/HEAD —
+	// mutating endpoints stay Bearer-only, which keeps the CSRF surface closed.
+	SessionOK func(*http.Request) bool
 }
 
 // Handler builds the routing table.
@@ -52,6 +56,11 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		plain := bearerToken(r)
 		if plain == "" {
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+				s.SessionOK != nil && s.SessionOK(r) {
+				next(w, r)
+				return
+			}
 			writeError(w, http.StatusUnauthorized, "missing token")
 			return
 		}

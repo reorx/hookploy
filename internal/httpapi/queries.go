@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/reorx/hookploy/internal/api"
 	"github.com/reorx/hookploy/internal/model"
+	"github.com/reorx/hookploy/internal/ops"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/version"
 )
@@ -136,6 +139,81 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleRecentDeploys serves GET /deploys?limit=N: newest deploys across all
+// services, without executions. limit defaults to 20, capped at 100.
+func (s *Server) handleRecentDeploys(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	deploys, err := s.Store.ListRecentDeploys(limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := []*api.Deploy{}
+	for _, d := range deploys {
+		out = append(out, api.FromDeploy(d, nil, nil))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleServiceDetail serves GET /services/{name}: the normalized service
+// definition with pipelines in the ops wire format.
+func (s *Server) handleServiceDetail(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	svc := s.Config().Services[name]
+	if svc == nil {
+		writeError(w, http.StatusNotFound, "unknown service "+name)
+		return
+	}
+	out := api.ServiceDetail{
+		Name:    svc.Name,
+		Image:   svc.Image,
+		Webhook: svc.Webhook,
+		Timeout: svc.Timeout.String(),
+		Rollout: svc.Rollout,
+	}
+	for _, inst := range svc.Instances {
+		out.Instances = append(out.Instances, api.InstanceInfo{Name: inst.Name, Server: inst.Server, Dir: inst.Dir})
+	}
+	deploySteps, err := marshalSteps(svc.Deploy)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out.Deploy = deploySteps
+	if len(svc.Tasks) > 0 {
+		out.Tasks = map[string][]json.RawMessage{}
+		for tname, steps := range svc.Tasks {
+			enc, err := marshalSteps(steps)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			out.Tasks[tname] = enc
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func marshalSteps(steps []ops.Step) ([]json.RawMessage, error) {
+	out := make([]json.RawMessage, 0, len(steps))
+	for _, st := range steps {
+		b, err := json.Marshal(st)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, nil
 }
 
 func (s *Server) handleServiceDeploys(w http.ResponseWriter, r *http.Request) {

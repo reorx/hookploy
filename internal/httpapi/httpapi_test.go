@@ -341,6 +341,95 @@ func TestStatusEndpoints(t *testing.T) {
 	}
 }
 
+// Behavior: GET /deploys lists recent deploys across services newest first,
+// without executions; limit is respected and capped at 100.
+func TestRecentDeploys(t *testing.T) {
+	h := newHarness(t)
+	resp := h.hook("linkmind", h.svcToken, `{}`)
+	acc1 := decodeJSON[api.Accepted](t, resp.Body)
+	h.waitDeploy(acc1.DeployID, model.StatusSucceeded)
+	time.Sleep(2 * time.Millisecond)
+	resp = h.adminReq("POST", "/services/condenser/deploy", `{}`)
+	acc2 := decodeJSON[api.Accepted](t, resp.Body)
+	h.waitDeploy(acc2.DeployID, model.StatusSucceeded)
+
+	resp = h.adminReq("GET", "/deploys", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	list := decodeJSON[[]api.Deploy](t, resp.Body)
+	if len(list) != 2 || list[0].ID != acc2.DeployID || list[1].ID != acc1.DeployID {
+		t.Fatalf("recent deploys wrong: %+v", list)
+	}
+	if len(list[0].Executions) != 0 {
+		t.Fatal("list must not include executions")
+	}
+	if list[0].Service != "condenser" || list[1].Service != "linkmind" {
+		t.Fatalf("services wrong: %s %s", list[0].Service, list[1].Service)
+	}
+
+	resp = h.adminReq("GET", "/deploys?limit=1", "")
+	if list := decodeJSON[[]api.Deploy](t, resp.Body); len(list) != 1 || list[0].ID != acc2.DeployID {
+		t.Fatalf("limit=1: %+v", list)
+	}
+	// invalid/oversized limits fall back to bounds instead of erroring
+	for _, q := range []string{"?limit=0", "?limit=-3", "?limit=abc", "?limit=500"} {
+		resp = h.adminReq("GET", "/deploys"+q, "")
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET /deploys%s: %d", q, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}
+
+// Behavior: GET /services/{name} returns the full service definition —
+// instances, rollout waves and pipelines in the ops wire format.
+func TestServiceDetail(t *testing.T) {
+	h := newHarness(t)
+	resp := h.adminReq("GET", "/services/simul", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	sd := decodeJSON[api.ServiceDetail](t, resp.Body)
+	if sd.Name != "simul" || !sd.Webhook || sd.Timeout != "10m0s" {
+		t.Fatalf("header fields: %+v", sd)
+	}
+	if len(sd.Instances) != 1 || sd.Instances[0].Server != "s1" || sd.Instances[0].Dir != "/opt/apps/simul" {
+		t.Fatalf("instances: %+v", sd.Instances)
+	}
+	if len(sd.Rollout) != 1 || len(sd.Rollout[0]) != 1 || sd.Rollout[0][0] != "simul" {
+		t.Fatalf("rollout: %+v", sd.Rollout)
+	}
+	if len(sd.Deploy) != 1 {
+		t.Fatalf("deploy steps: %+v", sd.Deploy)
+	}
+	// steps use the ops wire format: {"op":..., "args":...}
+	var step struct {
+		Op   string         `json:"op"`
+		Args map[string]any `json:"args"`
+	}
+	if err := json.Unmarshal(sd.Deploy[0], &step); err != nil {
+		t.Fatal(err)
+	}
+	if step.Op != "run" || step.Args["argv"] == nil {
+		t.Fatalf("step wire format: %s", sd.Deploy[0])
+	}
+	if len(sd.Tasks["db-push"]) != 1 {
+		t.Fatalf("tasks: %+v", sd.Tasks)
+	}
+	// image is set for linkmind
+	resp = h.adminReq("GET", "/services/linkmind", "")
+	if sd := decodeJSON[api.ServiceDetail](t, resp.Body); sd.Image != "ghcr.io/reorx/linkmind" {
+		t.Fatalf("image: %+v", sd)
+	}
+	// unknown service → 404
+	resp = h.adminReq("GET", "/services/ghost", "")
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown service: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 // Behavior: logs endpoint returns recorded output; follow=1 streams NDJSON
 // live until the deploy finishes.
 func TestLogsAndFollow(t *testing.T) {

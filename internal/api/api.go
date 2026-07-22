@@ -100,6 +100,27 @@ type ServiceSummary struct {
 	LastDeploy *Deploy  `json:"last_deploy,omitempty"`
 }
 
+// ServiceDetail is GET /services/{name}: the full normalized service
+// definition. Deploy/Tasks steps use the ops wire format {"op":..., "args":...}
+// — the same encoding as DB snapshots and gRPC dispatch.
+type ServiceDetail struct {
+	Name      string                       `json:"name"`
+	Image     string                       `json:"image,omitempty"`
+	Webhook   bool                         `json:"webhook"`
+	Timeout   string                       `json:"timeout"` // Go duration string, e.g. "10m0s"
+	Instances []InstanceInfo               `json:"instances"`
+	Rollout   [][]string                   `json:"rollout"` // waves × instance names
+	Deploy    []json.RawMessage            `json:"deploy"`
+	Tasks     map[string][]json.RawMessage `json:"tasks,omitempty"`
+}
+
+// InstanceInfo is one deployment target inside ServiceDetail.
+type InstanceInfo struct {
+	Name   string `json:"name"`
+	Server string `json:"server"`
+	Dir    string `json:"dir"`
+}
+
 // ServerInfo is one row of GET /servers.
 type ServerInfo struct {
 	Name        string     `json:"name"`

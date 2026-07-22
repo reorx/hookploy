@@ -360,10 +360,53 @@ admin token（subject 固定为 `admin`）：
 | `POST /services/<name>/tasks/<task>` | `api.Accepted`（202） | `hookploy task <service> <name> --json` |
 | `GET /deploys/<id>` | `api.Deploy`（含 `executions` 与逐 op 的 `ops`） | — |
 | `GET /deploys/<id>/logs` | 默认纯文本回放；`?format=json` 为 `api.LogLine` NDJSON；`?follow=1` 为 NDJSON 流（回放 + 终止帧） | `hookploy logs <id> [-f] [--json]` |
+| `GET /deploys?limit=N` | []`api.Deploy`（跨服务近期部署，`created_at` 降序，不含 `executions`；limit 默认 20、上限 100） | — |
 | `GET /services` | []`api.ServiceSummary` | `hookploy status --json` 的 `services` |
+| `GET /services/<name>` | `api.ServiceDetail` | — |
 | `GET /services/<name>/deploys` | []`api.Deploy` | `hookploy deploys <service> --json` |
 | `GET /servers` | []`api.ServerInfo` | `hookploy status --json` 的 `servers` |
 | `POST /-/reload` | `{"ok": true}`（热重载确认，非 `internal/api` DTO） | —（见部署指南 §6） |
+
+### `GET /services/<name>`：`api.ServiceDetail`
+
+服务的规范化定义（`server:` 语法糖已展开为 instances + rollout）。M4 Web UI 引入，无对应 CLI 命令。
+
+| 字段 | 类型 | 含义 | 可选 |
+|---|---|---|---|
+| `name` | string | 服务名 | 否 |
+| `image` | string | 服务级镜像声明 | 是 |
+| `webhook` | bool | 是否接受 webhook 触发 | 否 |
+| `timeout` | string | Go duration 字符串（如 `10m0s`） | 否 |
+| `instances` | []`api.InstanceInfo` | 部署目标列表 | 否 |
+| `rollout` | [][]string | 波次 × 实例名 | 否 |
+| `deploy` | []object | 部署流水线，每步为 ops 线格式 `{"op": ..., "args": {...}}`（与 DB 快照/gRPC 下发同源） | 否 |
+| `tasks` | map[string][]object | 各 task 流水线，步骤格式同 `deploy` | 是 |
+
+`api.InstanceInfo`：
+
+| 字段 | 类型 | 含义 | 可选 |
+|---|---|---|---|
+| `name` | string | 实例名 | 否 |
+| `server` | string | 落在哪台服务器 | 否 |
+| `dir` | string | 执行目录 | 否 |
+
+```json
+{
+  "name": "linkmind",
+  "image": "ghcr.io/reorx/linkmind",
+  "webhook": true,
+  "timeout": "10m0s",
+  "instances": [
+    { "name": "linkmind", "server": "s1", "dir": "/opt/apps/linkmind" }
+  ],
+  "rollout": [["linkmind"]],
+  "deploy": [
+    { "op": "compose.pull" },
+    { "op": "compose.up" },
+    { "op": "healthcheck", "args": { "url": "http://127.0.0.1:8080/health" } }
+  ]
+}
+```
 
 ### 错误体：`api.Error`
 

@@ -13,7 +13,7 @@ tags:
 
 **读者**：deploy workspace 的运维 agent（`~/Library/Mobile Documents/com~apple~CloudDocs/deploy`）。本文只讲「怎么把线上两台 edge 切过去、怎么验证、出问题怎么退」，hookploy 本身的用法见 `kb/docs/deployment-guide.md`。
 
-> ⚠️ **前置条件未满足，现在还不能执行。** 改动在 hookploy repo 的 `feat/transport-decouple-sse` 分支（commit `196c199`），尚未合入 master、尚未发 release。线上三台当前是 **v0.3.2**，该版本**没有** `--transport` flag。必须先出一个含本改动的 release，本文的步骤才成立。见 §2「前置条件」。
+> ✅ **前置条件已满足，可以执行。** 改动已合入 master 并随 **v0.4.0** 发布（2026-08-05）。线上三台当前仍是 **v0.3.2**，该版本**没有** `--transport` flag，所以升级仍是本文第一步。升级顺序不可颠倒（先 main 后 edge），见 §2「前置条件」。
 
 ## 1. 为什么要做这件事
 
@@ -61,18 +61,15 @@ edge↔main 的 gRPC 长连接经 Cloudflare 橙云，**每天被掐断约 1370 
 
 ## 2. 前置条件
 
-### 2.1 必须先有 release
+### 2.1 release 已就绪（v0.4.0）
 
-改动尚未发布。执行本文前需要在 hookploy repo 完成：
+hookploy repo 侧已完成：`feat/transport-decouple-sse` 已合入 master，**v0.4.0** 已发布（<https://github.com/reorx/hookploy/releases/tag/v0.4.0>），产物为 binary + `hookploy-ctl.sh` 的 tarball。
 
-1. `feat/transport-decouple-sse` 合入 master
-2. 打 tag 出 release（v0.3.2 之后的下一个版本），产物含 binary + `hookploy-ctl.sh` 的 tarball
-
-然后在 deploy workspace 更新 `ansible/group_vars/all.yml`：
+在 deploy workspace 更新 `ansible/group_vars/all.yml`：
 
 ```yaml
-hookploy_version: <新版本>
-hookploy_release_sha256: <取自 release 的 checksums.txt>
+hookploy_version: v0.4.0
+hookploy_release_sha256: 46713fe926e16537a0c006085e7c0cdb62eec082beca4cf864d739e9d3a21671  # hookploy-v0.4.0-linux-amd64.tar.gz
 ```
 
 ### 2.2 升级顺序不可颠倒：先 main，后 edge

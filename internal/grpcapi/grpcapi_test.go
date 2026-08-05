@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/reorx/hookploy/internal/config"
+	"github.com/reorx/hookploy/internal/edgehub"
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
 	"github.com/reorx/hookploy/internal/grpcapi"
@@ -33,6 +34,13 @@ type env struct {
 }
 
 func newEnv(t *testing.T) *env {
+	t.Helper()
+	return newEnvGrace(t, 200*time.Millisecond)
+}
+
+// newEnvGrace builds a main-side server whose hub holds disconnected edges'
+// executions for grace before giving up on them.
+func newEnvGrace(t *testing.T, grace time.Duration) *env {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
@@ -61,10 +69,12 @@ func newEnv(t *testing.T) *env {
 	}}
 
 	reg := executor.NewRegistry(200 * time.Millisecond)
+	hub := edgehub.New(reg, nil)
+	hub.GraceWindow = grace
 	srv := &grpcapi.Server{
-		Store:    st,
-		Registry: reg,
-		Config:   func() *config.Config { return cfg },
+		Store:  st,
+		Hub:    hub,
+		Config: func() *config.Config { return cfg },
 	}
 
 	lis := bufconn.Listen(1 << 20)
@@ -371,6 +381,9 @@ func TestRemoteExecuteFailure(t *testing.T) {
 	}
 }
 
+// Behavior: an edge that drops mid-execution and never comes back leaves the
+// execution unreachable once the grace window elapses — main never learned
+// the outcome, so it must not claim the execution failed.
 func TestRemoteExecuteEdgeDisconnect(t *testing.T) {
 	e := newEnv(t)
 	stream := e.hello(t, "edge1", e.tokens["edge1"], "v1")
@@ -384,8 +397,46 @@ func TestRemoteExecuteEdgeDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = ex.Execute(context.Background(), testSpec(t), &recordSink{})
-	if err == nil {
-		t.Fatal("expected error when edge disconnects mid-execution")
+	if !errors.Is(err, executor.ErrUnreachable) {
+		t.Fatalf("expected unreachable after the grace window, got %v", err)
+	}
+}
+
+// Behavior: the gRPC wire carries no inflight list, so a reconnecting edge
+// implicitly declares it holds nothing — the held execution is failed right
+// away rather than waiting out the grace window.
+func TestRemoteExecuteEdgeReconnectFailsHeldExecution(t *testing.T) {
+	e := newEnvGrace(t, 30*time.Second) // only the reconnect can settle this
+	s1 := e.hello(t, "edge1", e.tokens["edge1"], "v1")
+	recvAck(t, s1)
+	dispatched := make(chan struct{})
+	fakeEdge(t, s1, func(exec *pb.Execution, send func(*pb.ExecUpdate)) {
+		close(dispatched)
+		s1.CloseSend()
+	})
+	ex, err := e.reg.Acquire(context.Background(), "edge1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := ex.Execute(context.Background(), testSpec(t), &recordSink{})
+		errCh <- err
+	}()
+	<-dispatched
+
+	s2 := e.hello(t, "edge1", e.tokens["edge1"], "v2")
+	recvAck(t, s2)
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected failure once the edge came back without the execution")
+		}
+		if errors.Is(err, executor.ErrUnreachable) {
+			t.Fatalf("a reachable edge that lost the execution is failed, not unreachable: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution did not settle after the edge reconnected")
 	}
 }
 

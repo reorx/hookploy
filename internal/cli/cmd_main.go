@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/reorx/hookploy/internal/config"
+	"github.com/reorx/hookploy/internal/edgehub"
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
 	"github.com/reorx/hookploy/internal/grpcapi"
@@ -88,22 +89,28 @@ func cmdMain(ctx *Context, args []string) int {
 		return nil
 	}
 
+	// One hub across every edge transport: it owns attachment state and the
+	// per-server executors, so Edges() is already the merged view.
+	hub := edgehub.New(reg, logger)
 	grpcSrv := &grpcapi.Server{
-		Store:    st,
-		Registry: reg,
-		Config:   func() *config.Config { return cfgVal.Load() },
-		Logger:   logger,
+		Store:  st,
+		Hub:    hub,
+		Config: func() *config.Config { return cfgVal.Load() },
+		Logger: logger,
 	}
 	apiSrv := &httpapi.Server{
 		Store:  st,
 		Sched:  sched,
 		Config: func() *config.Config { return cfgVal.Load() },
 		Reload: reload,
-		Edges:  grpcSrv.Edges,
+		Edges:  hub.Edges,
+		// Serving the SSE edge transport on the HTTP listener: same host,
+		// same port, no gRPC-aware proxy needed in front.
+		Hub: hub,
 	}
 	var ui *webui.Server
 	if cfg.WebUI {
-		ui = webui.New(st, func() *config.Config { return cfgVal.Load() }, grpcSrv.Edges)
+		ui = webui.New(st, func() *config.Config { return cfgVal.Load() }, hub.Edges)
 		apiSrv.SessionOK = ui.SessionValid
 	} else {
 		logger.Printf("web ui disabled (webui: false)")

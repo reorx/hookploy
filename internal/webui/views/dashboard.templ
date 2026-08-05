@@ -62,7 +62,11 @@ templ DashboardContent(data DashboardData) {
 							if s.Local {
 								main 内建
 							} else if s.Online {
-								edge 在线
+								if s.Transport != "" {
+									{ "edge 在线 (" + s.Transport + ")" }
+								} else {
+									edge 在线
+								}
 							} else {
 								edge 离线
 							}

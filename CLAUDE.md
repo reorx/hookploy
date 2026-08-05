@@ -4,7 +4,7 @@
 
 ## 项目状态
 
-M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现（2026-07-22，计划见 `kb/plans/2026-07-21-web-ui-plan.md`）。GitHub Actions 集成（workflow_run webhook 推送，见 `kb/plans/2026-07-22-github-actions-plan.md`）已实现（2026-07-22）：`POST /github/webhook` 收构建事件，三处 UI 展示；数据不经 `internal/api`，DTO 契约未动。`--json` / `internal/api` DTO / HTTP API 契约已冻结。已知遗留（决定不修）：`logs -f` 探针用类型化 FollowFrame 后解码变严，分歧帧被静默丢弃（两端同源、风险低）。
+M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现（2026-07-22，计划见 `kb/plans/2026-07-21-web-ui-plan.md`）。GitHub Actions 集成（workflow_run webhook 推送，见 `kb/plans/2026-07-22-github-actions-plan.md`）已实现（2026-07-22）：`POST /github/webhook` 收构建事件，三处 UI 展示；数据不经 `internal/api`，DTO 契约未动。传输层解耦 + SSE 通路 + 流断容忍已实现（2026-07-30，计划见 `kb/plans/2026-07-30-transport-decouple-and-sse.md`）：新增 `internal/edgehub`（传输无关核心）、`internal/edgewire`，grpcapi 瘦身为适配器，httpapi 加 SSE 端点；真机验证（ali-hk-01，`ss -K` 掐流）通过。`--json` / `internal/api` DTO / HTTP API 契约已冻结（`model.EdgeInfo` 加了 `Transport`，仅内部与 Web UI 用，`api.ServerInfo` 未动）。已知遗留（决定不修）：`logs -f` 探针用类型化 FollowFrame 后解码变严，分歧帧被静默丢弃（两端同源、风险低）。
 
 生产部署、服务迁移等运维事项不在本仓库跟踪（见用户全局 CLAUDE.md 的 DevOps 约定，统一在 deploy 目录管理）。
 
@@ -23,8 +23,11 @@ M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现�
 - `internal/engine` — op 执行引擎（Runner/HTTP/Sleep 全部可注入，测试不碰 docker）；`internal/runner` — argv 执行（不经 shell）
 - `internal/executor` — Executor 抽象 + Registry（30s acquire 窗口 = 离线重连宽限）
 - `internal/scheduler` — 串行/去重/波次/digest 提升/恢复
-- `internal/grpcapi` — main 侧 gRPC：edge 会话鉴权、在线追踪；会话本身实现 Executor
-- `internal/edge` — edge 角色：重连循环、本机执行、流式回传
+- `internal/edgehub` — **main 侧传输无关核心**：attach/detach 状态、per-server Executor、update 路由、60s 宽限窗口与重连认领。gRPC 与 SSE 两个适配器共用它；`Edges()` 天然是合并视图
+- `internal/grpcapi` — gRPC 适配器：握手鉴权 + pb 编解码 + 驱动 edgehub
+- `internal/httpapi/edge.go` — SSE 适配器：`GET /edge/session`（单写者 goroutine，45s 心跳注释帧）+ `POST /edge/executions/{id}/updates|done`，serverAuth 中间件（server token，不吃 cookie）
+- `internal/edgewire` — SSE 通路 JSON wire 类型（定位对标 `internal/pb`，不进冻结的 `internal/api`）
+- `internal/edge` — edge 角色：`agent.go` 传输无关核心（退避重连、执行去重、结果缓冲+ack 补报）、`transport.go` 接口与中立 Task/Update 类型、`transport_grpc.go`（Resumable=false）、`transport_sse.go` + `sseread.go`（Resumable=true）
 - `proto/` → `internal/pb` — 协议定义与生成代码
 - `internal/store` — SQLite（含 workflow_runs：GitHub 构建记录，按 run id upsert、每 repo 留 200 条）；`internal/httpapi` — webhook + 状态 API + GitHub workflow_run webhook（`github.go`：HMAC 校验，secret 未配置时端点 404）；`internal/cli` — 命令入口；`internal/apiclient` — CLI 访问 admin API 的 HTTP 客户端；`internal/token` — token 生成/哈希
 - `internal/webui` — 内置只读 Web UI（`/ui/`，静态资源 go:embed 进 binary，发布包自包含；顶层配置 `webui: false` 可整体不挂载，重启生效）：templ 服务端渲染 + 会话 cookie（admin token 登录；cookie 仅对 GET admin API 生效）；页面 Dashboard / Actions（`/ui/actions`，按 service 过滤）/ 服务详情 / 部署详情；`views/` templ 源与生成码，`static/` embed 的 CSS/JS（app.js 片段轮询、logs.js NDJSON 日志流）。repo→service 映射在查询时经 service 的 `github_repo` 解析，热 reload 即时生效
@@ -34,6 +37,7 @@ M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现�
 - edge 只执行结构化 op（argv 直接 exec，不经 shell）；payload 无法注入命令
 - server 名由 server token 的 subject 推导（edge 零配置）；token 明文只在创建时输出一次
 - in-flight 执行用入队时的 ops 快照，config reload 不影响
+- **两条 edge 通路并存**（`edge --transport grpc|sse`，默认 grpc，也可用 `HOOKPLOY_TRANSPORT`）：同一个 `--main` URL，无自动探测、无自动回退。SSE 走 HTTP 口，CF 橙云下无需 gRPC 开关，且**独享流断容忍**（连接断 → main 保留执行 60s → edge 重连声明 inflight → 认领 → 补报结果 → 部署照常 succeeded；宽限内没回来判 unreachable 而非 failed）。gRPC wire 无 DoneAck/Hello.inflight，跨会话保留执行无法被 ack，故 `Resumable=false`、维持"断连即失败"现状语义，在 deprecation 路上
 
 ## 文档
 

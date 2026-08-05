@@ -150,9 +150,28 @@ GitHub 侧（repo Settings → Webhooks → Add webhook）：
 
 ### 4.1 模型
 
-- edge 是**无状态执行器**：主动外连 main 的 gRPC 口并保持长连接，接任务、本机执行 `docker compose` 操作、流式回传日志。断线后指数退避重连（1s 起、上限 30s）。
+- edge 是**无状态执行器**：主动外连 main 并保持长连接，接任务、本机执行 `docker compose` 操作、流式回传日志。断线后指数退避重连（1s 起、上限 30s）。
 - edge **零入站端口、零域名、零证书、零本地配置**——任务所需的一切（目录、步骤、参数）由 main 随任务下发。
 - edge 的身份由 server token 决定（token 的 subject 就是 server 名），启动命令只要 `--main` + `--token`。
+
+**两条通路（`--transport`，默认 `grpc`）**：
+
+| | `grpc` | `sse` |
+|---|---|---|
+| 端口 | 专用 gRPC 口（9101） | 与 HTTP API 同口（9100） |
+| 反代 | 需要 h2/gRPC 分流；CF 橙云需开 zone 的 gRPC 开关 | 普通 HTTP 反代即可，**CF 无需任何开关** |
+| 保活 | 传输层 keepalive 30s/10s | 45s 心跳注释帧（真实流量，代理都认） |
+| 流断容忍 | 无：连接断 = 执行判失败 | **有**：执行照常跑完，重连后补报结果 |
+
+两条通路同时可用、共享同一套内部逻辑，一台 edge 只选一条。**域名在 Cloudflare 橙云后面就选 `sse`**——CF 对所有代理流量有约 100s 空闲超时且不认 h2 PING，gRPC 长连接每天会断上千次，落在发版窗口就会把实际成功的部署记成 failed。gRPC 通路保留兼容，后续逐步弃用。
+
+**流断容忍语义（仅 `sse` 通路完整生效）**：
+
+- 连接断开时，main 为该 server 已下发的执行保留 **60s 宽限**：不判失败，等 edge 回来。
+- edge 重连时会声明自己还在跑哪些执行；main 认领它们，收到补报的结果后正常结算（成功就是成功）。
+- edge 重连但没声明某执行（例如 edge 进程重启过） → 该执行立即判 `failed`，不空等宽限。
+- 宽限内没回来 → 判 `unreachable`（不是 `failed`）：main 从未得知结果，不该替它下结论。CI 重跑即可。
+- 中间日志不重放，只补报最终结果；执行本身的 `timeout` 仍是兜底。
 
 ### 4.2 新服务器接入清单
 
@@ -176,9 +195,12 @@ GitHub 侧（repo Settings → Webhooks → Add webhook）：
 
    ```sh
    hookploy edge --main https://hookploy.example.com --token hps_xxx
+   # 走 CF 橙云 / 想要流断容忍：
+   hookploy edge --main https://hookploy.example.com --token hps_xxx --transport sse
    ```
 
    - token 也可用环境变量 `HOOKPLOY_SERVER_TOKEN` 传（systemd unit 里配 `EnvironmentFile` 更合适）。
+   - `--transport` 也可用 `HOOKPLOY_TRANSPORT` 传；默认 `grpc`。两条通路**同一个 `--main` URL**，不做自动探测也不自动回退（静默切换只会掩盖配置错误）。对着旧版 main 用 `--transport sse` 会拿到 404，edge 日志会明确提示并持续退避重试。
    - `--server <name>` 可选，仅作身份断言（名字来自 token，不填也行）。
    - `https://` URL 走 TLS（由 main 侧反向代理终结），`http://` 为明文（仅限内网/本机测试）。
 
@@ -186,9 +208,11 @@ GitHub 侧（repo Settings → Webhooks → Add webhook）：
 
 换机重装 = 重跑第 3 步，无需任何迁移。吊销一台机器：`servers:` 删掉 + revoke 其 server token。
 
-### 4.3 反向代理侧（多机需要暴露 gRPC）
+### 4.3 反向代理侧
 
-edge 从公网连 main 时，反向代理需要以 h2 反代 gRPC 口（Caddy 示例，HTTP 与 gRPC 共用一个域名）：
+**`--transport sse`（推荐）**：edge 只用普通 HTTP，反代不需要任何特殊配置——单条 `reverse_proxy 127.0.0.1:9100` 就够，gRPC 口可以完全不暴露。唯一要求是反代**不缓冲响应**（hookploy 已发 `X-Accel-Buffering: no`，nginx 需要额外确认 `proxy_buffering off`）。CF 橙云下无需开任何开关。
+
+**`--transport grpc`**：反向代理需要以 h2 反代 gRPC 口（Caddy 示例，HTTP 与 gRPC 共用一个域名）：
 
 ```
 hookploy.example.com {
@@ -200,7 +224,7 @@ hookploy.example.com {
 
 （hookploy 自身不管证书；gRPC keepalive 双向探活，死连接约 40s 内检出。）
 
-⚠️ **域名走 Cloudflare 代理（橙云）时，gRPC 依赖 zone 的 Network → gRPC 开关**：开关不开，edge 的 handshake 一律报 `Internal: server closed the stream without sending trailers`，请求根本到不了源站反代——这不是反代配置问题，**edge 排 offline 先查这个开关**。开关打开后，单域名 443 同时承载 HTTP 与 gRPC 即可打通（握手、任务分发、日志流均正常）。开不了开关时的绕行：**明文 h2c 直连源站 IP 上一个已放行的端口**——`edge --main http://<源站IP>:<port>`，该端口的 Caddy 监听须声明 `servers :<port> { protocols h1 h2c }`（全局选项）再用 `@grpc protocol grpc` 分流到 gRPC 口；此时 server token 会明文过网线，仅建议临时或内网使用。
+⚠️ **域名走 Cloudflare 代理（橙云）时，gRPC 依赖 zone 的 Network → gRPC 开关**（改用 `--transport sse` 可以整段绕开本条）：开关不开，edge 的 handshake 一律报 `Internal: server closed the stream without sending trailers`，请求根本到不了源站反代——这不是反代配置问题，**edge 排 offline 先查这个开关**。开关打开后，单域名 443 同时承载 HTTP 与 gRPC 即可打通（握手、任务分发、日志流均正常）。开不了开关时的绕行：**明文 h2c 直连源站 IP 上一个已放行的端口**——`edge --main http://<源站IP>:<port>`，该端口的 Caddy 监听须声明 `servers :<port> { protocols h1 h2c }`（全局选项）再用 `@grpc protocol grpc` 分流到 gRPC 口；此时 server token 会明文过网线，仅建议临时或内网使用。
 
 ### 4.4 edge 的进程管理
 
@@ -302,9 +326,10 @@ listen:
 
 | 现象 | 排查 |
 |---|---|
-| server 显示 offline | edge 进程在不在（`systemctl status` / `edge-status`）；edge 日志有无 `handshake rejected`（token 被吊销 / server 未在 yaml 声明）；反代 gRPC 路由是否 h2；域名走 Cloudflare 时 zone 的 gRPC 开关是否打开（§4.3） |
-| 部署 `unreachable` | 目标 edge 离线超 30s 窗口。edge 恢复后 CI 重跑即可 |
-| 部署 `failed`，error 带 "edge disconnected" | 执行中途连接断开；main 侧记为失败，edge 侧会同时取消本地执行。看 edge 日志确认 |
+| server 显示 offline | edge 进程在不在（`systemctl status` / `edge-status`）；edge 日志有无 `handshake rejected`（token 被吊销 / server 未在 yaml 声明）；`--transport grpc` 时反代 gRPC 路由是否 h2、CF zone 的 gRPC 开关是否打开（§4.3）；`--transport sse` 时日志有无 404 提示（main 版本过旧） |
+| edge 每天断连上千次 | 域名在 CF 橙云后面且用 `--transport grpc`。改用 `--transport sse`（§4.1）；这是根治手段，不是绕行 |
+| 部署 `unreachable` | 目标 edge 离线超 30s 分派窗口，或执行中途 edge 失联超 60s 宽限。main 从未得知结果，edge 恢复后 CI 重跑即可 |
+| 部署 `failed`，error 带 "edge disconnected" / "reconnected without execution" | 执行中途断连且 edge 没能保住该执行（`grpc` 通路一律如此；`sse` 通路则说明 edge 进程重启过）。看 edge 日志确认 |
 | status 里版本标 `(outdated)` | edge binary 落后于 main，按 §2 重新构建分发（先停进程再覆盖，否则 text file busy） |
 | webhook 401/403 | service token 错误或被轮换；`webhook: false` 的服务只接受 CLI 手动触发 |
 | 部署被顶掉（`superseded`） | 正常：同服务排队时 latest-wins，连推 N 个 commit 最多执行 2 次部署 |

@@ -4,8 +4,11 @@
 # 各放一份本脚本，只控制自己目录里的进程，绝不 pkill、绝不影响旁的实例。
 #
 # 角色：main（默认）与 edge。edge 需要同目录下两个 dotfile：
-#   .edge_main    — main 的 gRPC URL（如 http://127.0.0.1:9181 或 https://hookploy.example.com）
+#   .edge_main    — main 的 URL（grpc 通路指 gRPC 口如 http://127.0.0.1:9181；
+#                   sse 通路指 HTTP 口如 http://127.0.0.1:9180 或 https://hookploy.example.com）
 #   .server_token — server token（hps_...，`hookploy server token create <name>` 生成）
+# 可选：
+#   .edge_transport — grpc（缺省）或 sse
 
 cd "$(dirname "$0")" || exit 1
 
@@ -111,10 +114,16 @@ logs_proc() {
     fi
 }
 
+EDGE_ARGS=()
+
 edge_args() {
     if [ ! -f .edge_main ] || [ ! -f .server_token ]; then
         echo "edge requires .edge_main (main URL) and .server_token in $(pwd)" >&2
         return 1
+    fi
+    EDGE_ARGS=(edge --main "$(cat .edge_main)" --token "$(cat .server_token)")
+    if [ -f .edge_transport ]; then
+        EDGE_ARGS+=(--transport "$(cat .edge_transport)")
     fi
 }
 
@@ -138,7 +147,7 @@ case "$1" in
         ;;
     edge-start)
         edge_args || exit 1
-        start_proc edge.pid edge.log "hookploy edge" "$BIN" edge --main "$(cat .edge_main)" --token "$(cat .server_token)"
+        start_proc edge.pid edge.log "hookploy edge" "$BIN" "${EDGE_ARGS[@]}"
         ;;
     edge-stop)
         stop_proc edge.pid "hookploy edge"
@@ -150,7 +159,7 @@ case "$1" in
         stop_proc edge.pid "hookploy edge"
         sleep 1
         edge_args || exit 1
-        start_proc edge.pid edge.log "hookploy edge" "$BIN" edge --main "$(cat .edge_main)" --token "$(cat .server_token)"
+        start_proc edge.pid edge.log "hookploy edge" "$BIN" "${EDGE_ARGS[@]}"
         ;;
     edge-logs)
         logs_proc edge.log "$2"

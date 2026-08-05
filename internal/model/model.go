@@ -143,6 +143,7 @@ func AllTerminal(statuses []Status) bool {
 type EdgeInfo struct {
 	Server      string
 	Version     string
+	Transport   string // grpc | sse
 	ConnectedAt time.Time
 }
 

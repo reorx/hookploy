@@ -15,6 +15,7 @@ type ServerRow struct {
 	Online       bool
 	Local        bool
 	Version      string
+	Transport    string // grpc | sse, connected edges only
 	ConnectedFor string // edge session age ("2h"), edges only
 }
 

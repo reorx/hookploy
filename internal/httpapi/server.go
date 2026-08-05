@@ -8,8 +8,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/reorx/hookploy/internal/config"
+	"github.com/reorx/hookploy/internal/edgehub"
 	"github.com/reorx/hookploy/internal/model"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/store"
@@ -28,6 +30,12 @@ type Server struct {
 	Reload func() error
 	// Edges reports currently connected edge sessions (nil in M1 setups).
 	Edges func() map[string]model.EdgeInfo
+	// Hub serves the SSE edge transport. The /edge/ endpoints exist only
+	// when it is set.
+	Hub *edgehub.Hub
+	// EdgeHeartbeat overrides how often the SSE session stream emits a
+	// keep-alive comment (default 45s).
+	EdgeHeartbeat time.Duration
 	// SessionOK reports whether the request carries a valid web UI session
 	// cookie (nil when the UI is not mounted). Only consulted for GET/HEAD —
 	// mutating endpoints stay Bearer-only, which keeps the CSRF surface closed.
@@ -49,6 +57,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /services/{name}/deploy", s.admin(s.handleTriggerDeploy))
 	mux.HandleFunc("POST /services/{name}/tasks/{task}", s.admin(s.handleTriggerTask))
 	mux.HandleFunc("POST /-/reload", s.admin(s.handleReload))
+	if s.Hub != nil {
+		mux.HandleFunc("GET /edge/session", s.serverAuth(s.handleEdgeSession))
+		mux.HandleFunc("POST /edge/executions/{id}/updates", s.serverAuth(s.handleEdgeUpdates))
+		mux.HandleFunc("POST /edge/executions/{id}/done", s.serverAuth(s.handleEdgeDone))
+	}
 	return mux
 }
 

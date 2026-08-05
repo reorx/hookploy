@@ -487,6 +487,7 @@ func (s *Server) serverRows() []views.ServerRow {
 		} else if info, ok := edges[name]; ok {
 			row.Online = true
 			row.Version = info.Version
+			row.Transport = info.Transport
 			row.ConnectedFor = views.Ago(info.ConnectedAt)
 		}
 		out = append(out, row)

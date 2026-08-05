@@ -18,14 +18,18 @@ func cmdEdge(ctx *Context, args []string) int {
 	mainURL := fs.String("main", "", "main URL, e.g. https://hookploy.example.com")
 	tok := fs.String("token", "", "server token (hps_...); or HOOKPLOY_SERVER_TOKEN")
 	server := fs.String("server", "", "optional server name assertion (derived from the token by default)")
+	transport := fs.String("transport", "", "wire to main: grpc (default) or sse; or HOOKPLOY_TRANSPORT")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *tok == "" {
 		*tok = os.Getenv("HOOKPLOY_SERVER_TOKEN")
 	}
+	if *transport == "" {
+		*transport = os.Getenv("HOOKPLOY_TRANSPORT")
+	}
 	if *mainURL == "" || *tok == "" {
-		fmt.Fprintln(ctx.Stderr, "usage: hookploy edge --main <url> --token <t> [--server <name>]")
+		fmt.Fprintln(ctx.Stderr, "usage: hookploy edge --main <url> --token <t> [--server <name>] [--transport grpc|sse]")
 		return 2
 	}
 
@@ -39,10 +43,11 @@ func cmdEdge(ctx *Context, args []string) int {
 	}()
 
 	err := edge.Run(runCtx, edge.Options{
-		MainURL: *mainURL,
-		Token:   *tok,
-		Server:  *server,
-		Logger:  log.New(ctx.Stderr, "", log.LstdFlags),
+		MainURL:   *mainURL,
+		Token:     *tok,
+		Server:    *server,
+		Transport: *transport,
+		Logger:    log.New(ctx.Stderr, "", log.LstdFlags),
 	})
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "edge: %v\n", err)

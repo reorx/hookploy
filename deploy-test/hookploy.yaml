@@ -58,3 +58,11 @@ services:
     rollout:
       - main
       - edge
+
+  # SSE 流断容忍验证：拉长执行窗口，好在执行中途掐掉 SSE 流
+  # （ss -K dst 127.0.0.1:9180），观察 edge 重连补报、部署仍记 succeeded
+  echo_slow_edge:
+    server: edge-01
+    dir: /opt/apps/echo_server
+    deploy:
+      - run: { argv: ["/bin/sh", "-c", "echo slow-op start; sleep 45; echo slow-op done"] }

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -403,6 +404,30 @@ func TestUnreachableServer(t *testing.T) {
 	}
 	if len(h.fake.Calls) != 0 {
 		t.Fatal("nothing must execute for an unreachable server")
+	}
+}
+
+// unreachableExecutor stands in for an edge that dropped its stream
+// mid-execution and never came back within the hub's grace window.
+type unreachableExecutor struct{}
+
+func (unreachableExecutor) Execute(context.Context, engine.Spec, engine.Sink) (engine.Result, error) {
+	return engine.Result{}, fmt.Errorf("%w: s1 (did not reconnect within 60s)", executor.ErrUnreachable)
+}
+
+// Behavior: an edge that goes away mid-execution and never returns leaves the
+// execution unreachable, not failed — main never learned the outcome, and
+// calling it failed would misreport deploys that actually succeeded.
+func TestUnreachableDuringExecution(t *testing.T) {
+	h := newHarness(t, false, 0)
+	h.reg.Register("s1", unreachableExecutor{})
+	svc := service("app", nil, `[{run: {argv: [deploy-step]}}]`)
+
+	d := h.enqueue(svc, "")
+	got := h.waitStatus(d.ID, model.StatusUnreachable)
+	execs, _ := h.store.ListExecutions(got.ID)
+	if execs[0].Status != model.StatusUnreachable {
+		t.Fatalf("execution status = %s, want unreachable", execs[0].Status)
 	}
 }
 

@@ -219,10 +219,16 @@ func (s *Scheduler) runExecution(ex *model.Execution, kind, digest string) (stri
 	}, &storeSink{store: s.store, execID: ex.ID})
 	if err != nil {
 		msg := err.Error()
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		to := model.StatusFailed
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			msg = fmt.Sprintf("timeout after %s: %s", ex.Timeout, msg)
+		case errors.Is(err, executor.ErrUnreachable):
+			// The edge vanished mid-execution and never came back: main never
+			// learned the outcome, so it must not claim the deploy failed.
+			to = model.StatusUnreachable
 		}
-		_, _ = s.transition(ex, model.StatusRunning, model.StatusFailed, msg)
+		_, _ = s.transition(ex, model.StatusRunning, to, msg)
 		return res.Digest, false
 	}
 	_, _ = s.transition(ex, model.StatusRunning, model.StatusSucceeded, "")

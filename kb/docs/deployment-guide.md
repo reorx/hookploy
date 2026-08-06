@@ -146,6 +146,48 @@ GitHub 侧（repo Settings → Webhooks → Add webhook）：
 - 多个 repo 可以指向不同服务；未被任何服务 `github_repo` 引用的 repo 事件也会保存，在 `/ui/actions` 可见（service 列为空）。
 - 两个 key 都支持热 reload（§6），改完 `-/reload` 即生效。
 
+### 3.7 部署失败通知（可选）
+
+部署以失败告终时，把事件推到一个外部通道。第一阶段只有 Telegram Bot 一种后端；`provider` 同一时刻只有一个生效。**省略整个 `notify:` 块 = 不发通知**（和 `github.webhook_secret` 一样，未配置即关闭）。
+
+```yaml
+notify:
+  provider: telegram                    # 省略 = 关闭；另一个保留值是 center（见文末）
+  base_url: https://hookploy.example.com  # 可选：消息里附 /ui/deploys/<id> 链接，留空则不带
+  events: [deploy.failed]               # 可选，这就是默认值
+  telegram:
+    bot_token: "123456789:AA..."        # 明文，用时现读，不会出现在任何 API / Web UI / --json 输出里
+    chat_id: "-1001234567890"
+
+services:
+  noisy-cron:
+    notify: { enabled: false }          # 本服务完全静音
+  payments:
+    notify:
+      events: [deploy.failed, deploy.recovered]   # 替换全局列表，不是追加
+```
+
+拿 Telegram 凭据：找 [@BotFather](https://t.me/BotFather) `/newbot` 拿 `bot_token`；把 bot 拉进目标频道/群并给发消息权限，然后向频道发一条消息、访问 `https://api.telegram.org/bot<token>/getUpdates` 从返回里读 `chat.id`（频道 id 通常是 `-100` 开头的负数）。
+
+事件词汇表（`notify.events` 与服务级覆盖都只接受这四个，写错在 `hookploy validate` 阶段就报错）：
+
+| 事件 | 何时触发 |
+|---|---|
+| `deploy.failed` | 部署以失败告终（**默认唯一开启项**）。含 op 失败、超时、rollout 中途 abort |
+| `deploy.unreachable` | 目标服务器全程联系不上，main 从未得知结果——刻意与 failed 区分，别把它当成"部署坏了" |
+| `deploy.succeeded` | 部署成功 |
+| `deploy.recovered` | 本次成功，而同一服务上一次是失败/unreachable。它**替代** `deploy.succeeded`，所以只订阅 succeeded 的服务不会收到恢复通知，反之亦然 |
+
+说明：
+
+- **一次部署一条消息**，正文列出每个未成功的实例及其错误，不是每个实例一条。
+- **失败但不通知的两种情况**：整个 rollout 被取消（只发生在 main 关机时取消未派发的波次，不是事故）、部署被更新的一次取代（superseded，它根本没跑）。
+- **重启不刷屏**：main 重启时收尾上个进程遗留的部署会判为失败，但刻意不发通知。
+- **投递是尽力而为**：内存有界队列（满了丢最旧）+ 有限次退避重试，失败记日志放弃，不落库、进程重启会丢。通知从不阻塞部署，也从不影响 webhook 响应速度。
+- `notify:` 整块支持热 reload（§6），改完 `-/reload` 即生效，包括轮换 bot_token。
+- `provider: telegram` 却缺 `bot_token`/`chat_id` 会**加载失败**——配了却哑掉比明确关闭更糟。
+- `provider: center`（统一通知中心）是为第二阶段保留的值：schema 已接受，但当前会在 `hookploy validate` 报"not implemented yet"。
+
 ## 4. 多机部署（main + edge）
 
 ### 4.1 模型

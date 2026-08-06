@@ -134,6 +134,27 @@ services:
         - compose.exec: { service: web, argv: [pnpm, "db:push"] }
 `,
 		"servers only, no services": minimalServers,
+		"notify, global and per-service": minimalServers + `
+notify:
+  provider: telegram
+  base_url: https://deploy.example.com
+  events: [deploy.failed, deploy.recovered]
+  telegram:
+    bot_token: "123:AA"
+    chat_id: "-100123"
+services:
+  quiet:
+    server: s1
+    dir: /opt/quiet
+    notify: { enabled: false }
+    deploy: [compose.up]
+  loud:
+    server: s1
+    dir: /opt/loud
+    notify:
+      events: [deploy.failed, deploy.succeeded, deploy.unreachable]
+    deploy: [compose.up]
+`,
 	}
 }
 
@@ -168,6 +189,14 @@ services:
 servers:
   s1: { loca: true }
 `, "additional properties 'loca' not allowed"},
+		{"unknown notify field", minimalServers + "notify: { provdier: telegram }\n",
+			"additional properties 'provdier' not allowed"},
+		{"unknown notify event", minimalServers + "notify: { events: [deploy.faild] }\n",
+			"value must be one of"},
+		{"unknown service notify field", minimalServers + `
+services:
+  a: { server: s1, dir: /a, notify: { enabld: false }, deploy: [compose.up] }
+`, "additional properties 'enabld' not allowed"},
 		{"unknown op", minimalServers + `
 services:
   a: { server: s1, dir: /a, deploy: [compose.blow] }
@@ -472,6 +501,9 @@ var schemaSyncCases = []struct {
 }{
 	{name: "rawFile", ptr: "#", raw: &rawFile{}},
 	{name: "rawGithub", ptr: "#/properties/github", raw: &rawGithub{}},
+	{name: "rawNotify", ptr: "#/properties/notify", raw: &rawNotify{}},
+	{name: "rawTelegram", ptr: "#/properties/notify/properties/telegram", raw: &rawTelegram{}},
+	{name: "rawServiceNotify", ptr: "#/definitions/service/properties/notify", raw: &rawServiceNotify{}},
 	{name: "Listen", ptr: "#/properties/listen", raw: &Listen{}},
 	{name: "rawDefaults", ptr: "#/properties/defaults", raw: &rawDefaults{}},
 	{name: "rawServer", ptr: "#/definitions/server", raw: &rawServer{}},

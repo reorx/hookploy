@@ -23,6 +23,7 @@ import (
 	"github.com/reorx/hookploy/internal/executor"
 	"github.com/reorx/hookploy/internal/grpcapi"
 	"github.com/reorx/hookploy/internal/httpapi"
+	"github.com/reorx/hookploy/internal/notify"
 	"github.com/reorx/hookploy/internal/pb"
 	"github.com/reorx/hookploy/internal/runner"
 	"github.com/reorx/hookploy/internal/scheduler"
@@ -72,11 +73,18 @@ func cmdMain(ctx *Context, args []string) int {
 	}
 	registerLocals(cfg)
 
+	notifier := notify.New(st, func() *config.Config { return cfgVal.Load() }, logger)
+	notifier.Start()
+
 	sched := scheduler.New(st, reg)
+	// Wired after Recover on purpose: closing out rollouts the previous
+	// process abandoned is not news, and Recover runs before the listeners
+	// are even up.
 	if err := sched.Recover(); err != nil {
 		fmt.Fprintf(ctx.Stderr, "recover: %v\n", err)
 		return 1
 	}
+	sched.Notify = notifier.Notify
 
 	reload := func() error {
 		c2, err := config.Load(*file)
@@ -103,6 +111,9 @@ func cmdMain(ctx *Context, args []string) int {
 		Sched:  sched,
 		Config: func() *config.Config { return cfgVal.Load() },
 		Reload: reload,
+		// A deploy that fails to build never reaches the scheduler, so the
+		// HTTP layer reports that one itself.
+		Notify: notifier.Notify,
 		Edges:  hub.Edges,
 		// Serving the SSE edge transport on the HTTP listener: same host,
 		// same port, no gRPC-aware proxy needed in front.
@@ -170,6 +181,9 @@ func cmdMain(ctx *Context, args []string) int {
 			cancel()
 			grpcServer.Stop()
 			sched.Shutdown()
+			// After the scheduler: shutting it down settles the rollouts it
+			// was holding, and those notifications are worth the short wait.
+			notifier.Shutdown()
 			logger.Printf("bye")
 			return 0
 		}

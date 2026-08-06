@@ -108,6 +108,38 @@ func JSONSchema() ([]byte, error) {
 				},
 				AdditionalProperties: false,
 			},
+			"notify": {
+				Type:        "object",
+				Description: "部署结果通知。同一时刻只有一个 provider 生效；省略 provider 等于关闭通知。凭据明文写在这里，用时现读，不出现在任何 API / Web UI / --json 输出中。",
+				Properties: map[string]*jsonSchema{
+					"provider": {
+						Type: "string",
+						// center 先列进来：schema 是宽松上界，"尚未实现" 由
+						// hookploy validate 报，第二阶段接入时这里无需改动。
+						Enum:        []any{"telegram", "center"},
+						Description: "通知后端；省略 = 不发通知。center 为统一通知中心，尚未实现。",
+					},
+					"base_url": {
+						Type:        "string",
+						Description: "Web UI 对外可访问的根地址，用于在消息里拼出 /ui/deploys/<id> 链接；留空则消息不带链接。",
+					},
+					"events": {
+						Type:        "array",
+						Items:       &jsonSchema{Type: "string", Enum: eventKindEnum()},
+						Description: `要推送的事件，省略时默认只含 "deploy.failed"。可被服务级 notify.events 覆盖。`,
+					},
+					"telegram": {
+						Type:        "object",
+						Description: "provider: telegram 时必填（缺任一项则 hookploy validate 失败）。",
+						Properties: map[string]*jsonSchema{
+							"bot_token": {Type: "string", Description: "Telegram Bot API token。"},
+							"chat_id":   {Type: "string", Description: "目标频道/群组的 chat id。"},
+						},
+						AdditionalProperties: false,
+					},
+				},
+				AdditionalProperties: false,
+			},
 			"servers": {
 				Type:                 "object",
 				Description:          "部署目标服务器。键为 server 名，edge 的身份由 server token 的 subject 推导。",
@@ -159,6 +191,17 @@ func JSONSchema() ([]byte, error) {
 	return json.MarshalIndent(root, "", "  ")
 }
 
+// eventKindEnum renders the notify vocabulary as a schema enum, so a new
+// model.EventKind shows up in the schema without touching this file.
+func eventKindEnum() []any {
+	kinds := model.EventKinds()
+	out := make([]any, len(kinds))
+	for i, k := range kinds {
+		out[i] = string(k)
+	}
+	return out
+}
+
 func serviceSchema() *jsonSchema {
 	pipeline := func(desc string) *jsonSchema {
 		return &jsonSchema{
@@ -184,6 +227,19 @@ func serviceSchema() *jsonSchema {
 				Type:        "string",
 				Pattern:     `^[^/\s]+/[^/\s]+$`,
 				Description: "关联的 GitHub 仓库（owner/repo），用于把 workflow_run 事件关联到本服务并在 UI 展示构建。",
+			},
+			"notify": {
+				Type:        "object",
+				Description: "覆盖全局通知策略，仅本服务生效。",
+				Properties: map[string]*jsonSchema{
+					"enabled": {Type: "boolean", Description: "false 表示本服务完全静音，默认 true。"},
+					"events": {
+						Type:        "array",
+						Items:       &jsonSchema{Type: "string", Enum: eventKindEnum()},
+						Description: "替换（而非追加）本服务的事件列表；省略表示继承全局 notify.events。",
+					},
+				},
+				AdditionalProperties: false,
 			},
 			"timeout": durationRef("单次执行超时，覆盖 defaults.timeout。"),
 			"deploy":  pipeline("默认部署流水线，webhook 触发时执行。"),

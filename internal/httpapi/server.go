@@ -36,6 +36,11 @@ type Server struct {
 	// EdgeHeartbeat overrides how often the SSE session stream emits a
 	// keep-alive comment (default 45s).
 	EdgeHeartbeat time.Duration
+	// Notify reports a deploy that is born already terminal — a build failure
+	// never reaches the scheduler, so nothing else would ever report it. Same
+	// bare signature as scheduler.Notify, and nil-safe; it must not block,
+	// since this runs on the request goroutine.
+	Notify func(deployID string)
 	// SessionOK reports whether the request carries a valid web UI session
 	// cookie (nil when the UI is not mounted). Only consulted for GET/HEAD —
 	// mutating endpoints stay Bearer-only, which keeps the CSRF surface closed.

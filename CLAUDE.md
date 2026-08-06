@@ -6,6 +6,8 @@
 
 M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现（2026-07-22，计划见 `kb/plans/2026-07-21-web-ui-plan.md`）。GitHub Actions 集成（workflow_run webhook 推送，见 `kb/plans/2026-07-22-github-actions-plan.md`）已实现（2026-07-22）：`POST /github/webhook` 收构建事件，三处 UI 展示；数据不经 `internal/api`，DTO 契约未动。传输层解耦 + SSE 通路 + 流断容忍已实现（2026-07-30，计划见 `kb/plans/2026-07-30-transport-decouple-and-sse.md`）：新增 `internal/edgehub`（传输无关核心）、`internal/edgewire`，grpcapi 瘦身为适配器，httpapi 加 SSE 端点；真机验证（ali-hk-01，`ss -K` 掐流）通过。`--json` / `internal/api` DTO / HTTP API 契约已冻结（`model.EdgeInfo` 加了 `Transport`，仅内部与 Web UI 用，`api.ServerInfo` 未动）。已知遗留（决定不修）：`logs -f` 探针用类型化 FollowFrame 后解码变严，分歧帧被静默丢弃（两端同源、风险低）。
 
+部署失败通知第一阶段已实现（2026-08-05）：新增 `internal/notify`（Telegram Bot），`hookploy.yaml` 加 `notify:` 段（全局 + 每 service 覆盖），事件词汇表定在 `model.EventKind`（四个，默认只开 `deploy.failed`）。顺带把 `store.RecomputeDeployStatus` 的终态写入改成 `finished_at` 上的 CAS 并新增 `settled bool` 返回值——它一次 rollout 会被调用 3+ 次，此前无从分辨哪次才是真正的结算（同时修掉了 `Done` 事件重复 publish）。`internal/api` / `--json` / Web UI 契约未动。二阶段（通知中心）接口已预留，见代码地图。
+
 生产部署、服务迁移等运维事项不在本仓库跟踪（见用户全局 CLAUDE.md 的 DevOps 约定，统一在 deploy 目录管理）。
 
 ## 常用命令
@@ -29,6 +31,7 @@ M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现�
 - `internal/edgewire` — SSE 通路 JSON wire 类型（定位对标 `internal/pb`，不进冻结的 `internal/api`）
 - `internal/edge` — edge 角色：`agent.go` 传输无关核心（退避重连、执行去重、结果缓冲+ack 补报）、`transport.go` 接口与中立 Task/Update 类型、`transport_grpc.go`（Resumable=false）、`transport_sse.go` + `sseread.go`（Resumable=true）
 - `proto/` → `internal/pb` — 协议定义与生成代码
+- `internal/notify` — 部署失败通知（一阶段 Telegram，二阶段切通知中心）：`notify.go`（`Hub` 异步投递——有界队列、退避重试、按 deployID 去重、关机前有界补投）、`classify.go`（deploy 终态 → `model.EventKind`，含 recovered 判定与 per-service 策略过滤）、`telegram.go`（`Provider` 实现 + `providerFor` 分发 + 渲染，渲染是 provider 私有）。scheduler / httpapi 只持有裸签名 `func(deployID string)`，**都不 import 本包**；二阶段加 `center.go` + `providerFor` 一个 case + config 三处追加即可，Hub 与两个生产者不用动
 - `internal/store` — SQLite（含 workflow_runs：GitHub 构建记录，按 run id upsert、每 repo 留 200 条）；`internal/httpapi` — webhook + 状态 API + GitHub workflow_run webhook（`github.go`：HMAC 校验，secret 未配置时端点 404）；`internal/cli` — 命令入口；`internal/apiclient` — CLI 访问 admin API 的 HTTP 客户端；`internal/token` — token 生成/哈希
 - `internal/webui` — 内置只读 Web UI（`/ui/`，静态资源 go:embed 进 binary，发布包自包含；顶层配置 `webui: false` 可整体不挂载，重启生效）：templ 服务端渲染 + 会话 cookie（admin token 登录；cookie 仅对 GET admin API 生效）；页面 Dashboard / Actions（`/ui/actions`，按 service 过滤）/ 服务详情 / 部署详情；`views/` templ 源与生成码，`static/` embed 的 CSS/JS（app.js 片段轮询、logs.js NDJSON 日志流）。repo→service 映射在查询时经 service 的 `github_repo` 解析，热 reload 即时生效
 

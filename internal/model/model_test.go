@@ -92,3 +92,29 @@ func TestAllTerminal(t *testing.T) {
 		}
 	}
 }
+
+// Behavior: the notify vocabulary is closed — config validates event names
+// against it, so an unknown name must never pass as valid, and the default
+// list must itself be part of the vocabulary or every install would reject
+// its own defaults.
+func TestEventKindVocabulary(t *testing.T) {
+	for _, k := range EventKinds() {
+		if !k.Valid() {
+			t.Errorf("%q is in EventKinds but reports invalid", k)
+		}
+	}
+	for _, bad := range []EventKind{"", "deploy.faild", "deploy", "deploy.failed "} {
+		if bad.Valid() {
+			t.Errorf("%q reports valid but is not in the vocabulary", bad)
+		}
+	}
+	def := DefaultEventKinds()
+	if len(def) != 1 || def[0] != EventDeployFailed {
+		t.Errorf("default event kinds = %v, want [deploy.failed]", def)
+	}
+	for _, k := range def {
+		if !k.Valid() {
+			t.Errorf("default event %q is not in the vocabulary", k)
+		}
+	}
+}

@@ -139,6 +139,45 @@ func AllTerminal(statuses []Status) bool {
 	return true
 }
 
+// EventKind names one notification-worthy occurrence in a deploy's life.
+// The vocabulary is deliberately wider than Status: EventDeployRecovered
+// names a *transition* (this run succeeded, the one before it did not) that
+// no single status captures.
+//
+// It lives here rather than in internal/notify because internal/config has
+// to validate hookploy.yaml's notify.events lists, and config cannot import
+// notify — notify holds a func() *config.Config closure. model owns the
+// vocabulary; internal/notify owns the rules that resolve one from a
+// settled deploy.
+type EventKind string
+
+const (
+	EventDeployFailed      EventKind = "deploy.failed"
+	EventDeploySucceeded   EventKind = "deploy.succeeded"
+	EventDeployRecovered   EventKind = "deploy.recovered"
+	EventDeployUnreachable EventKind = "deploy.unreachable"
+)
+
+// EventKinds is the complete vocabulary in a stable order. Config validation
+// and the JSON Schema both derive from it, so a new kind is added once.
+func EventKinds() []EventKind {
+	return []EventKind{EventDeployFailed, EventDeploySucceeded, EventDeployRecovered, EventDeployUnreachable}
+}
+
+// Valid reports whether k is one of EventKinds.
+func (k EventKind) Valid() bool {
+	for _, v := range EventKinds() {
+		if v == k {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultEventKinds is what notify.events falls back to when omitted:
+// failures only, because those are the ones worth waking someone for.
+func DefaultEventKinds() []EventKind { return []EventKind{EventDeployFailed} }
+
 // EdgeInfo is the live state of one connected edge session.
 type EdgeInfo struct {
 	Server      string

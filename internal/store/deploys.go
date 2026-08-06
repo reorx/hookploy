@@ -220,10 +220,19 @@ func (s *Store) execStatuses(deployID string) ([]model.Status, error) {
 
 // RecomputeDeployStatus aggregates execution statuses into the deploy row
 // and notifies followers when the deploy reaches a terminal state.
-func (s *Store) RecomputeDeployStatus(deployID string) (model.Status, error) {
+//
+// settled reports whether this particular call is the one that ended the
+// rollout. A rollout is recomputed many times over — once per execution
+// transition and again at every wave boundary — with nothing in the result
+// to tell the closing recompute from the redundant ones that follow it. The
+// terminal UPDATE is therefore a compare-and-set on finished_at, the same
+// shape TransitionExecution uses on status: since the store runs on a single
+// connection, exactly one caller ever comes back with settled true. Callers
+// firing a once-per-deploy side effect key off it, never off status alone.
+func (s *Store) RecomputeDeployStatus(deployID string) (status model.Status, settled bool, err error) {
 	statuses, err := s.execStatuses(deployID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	agg := model.AggregateStatus(statuses)
 	// The aggregate goes failed as soon as any instance fails, so followers
@@ -232,18 +241,26 @@ func (s *Store) RecomputeDeployStatus(deployID string) (model.Status, error) {
 	// first failure would end the stream while later waves are still queued,
 	// leaving followers with a finished deploy holding unsettled instances.
 	if agg.Terminal() && model.AllTerminal(statuses) {
-		if _, err := s.db.Exec(
-			"UPDATE deploys SET status = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?",
-			string(agg), now(), deployID); err != nil {
-			return "", err
+		res, err := s.db.Exec(
+			"UPDATE deploys SET status = ?, finished_at = ? WHERE id = ? AND finished_at IS NULL",
+			string(agg), now(), deployID)
+		if err != nil {
+			return "", false, err
 		}
-		s.bc.publish(deployID, Event{Done: true, Status: agg})
-	} else {
-		if _, err := s.db.Exec("UPDATE deploys SET status = ? WHERE id = ?", string(agg), deployID); err != nil {
-			return "", err
+		n, err := res.RowsAffected()
+		if err != nil {
+			return "", false, err
 		}
+		if n > 0 {
+			s.bc.publish(deployID, Event{Done: true, Status: agg})
+			return agg, true, nil
+		}
+		return agg, false, nil
 	}
-	return agg, nil
+	if _, err := s.db.Exec("UPDATE deploys SET status = ? WHERE id = ?", string(agg), deployID); err != nil {
+		return "", false, err
+	}
+	return agg, false, nil
 }
 
 // MarkDeploySuperseded supersedes a still-queued deploy and its executions.

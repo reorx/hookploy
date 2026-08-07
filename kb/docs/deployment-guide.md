@@ -146,22 +146,24 @@ GitHub 侧（repo Settings → Webhooks → Add webhook）：
 - 多个 repo 可以指向不同服务；未被任何服务 `github_repo` 引用的 repo 事件也会保存，在 `/ui/actions` 可见（service 列为空）。
 - 两个 key 都支持热 reload（§6），改完 `-/reload` 即生效。
 
-### 3.7 部署失败通知（可选）
+### 3.7 通知（可选）
 
-部署以失败告终时，把事件推到一个外部通道。第一阶段只有 Telegram Bot 一种后端；`provider` 同一时刻只有一个生效。**省略整个 `notify:` 块 = 不发通知**（和 `github.webhook_secret` 一样，未配置即关闭）。
+把部署失败、以及节点的上下线推到一个外部通道。第一阶段只有 Telegram Bot 一种后端；`provider` 同一时刻只有一个生效。**省略整个 `notify:` 块 = 不发通知**（和 `github.webhook_secret` 一样，未配置即关闭）。
 
 ```yaml
 notify:
   provider: telegram                    # 省略 = 关闭；另一个保留值是 center（见文末）
   base_url: https://hookploy.example.com  # 可选：消息里附 /ui/deploys/<id> 链接，留空则不带
-  events: [deploy.failed]               # 可选，这就是默认值
+  # 可选。下面这行就是默认值：部署失败 + 全部节点事件
+  events: [deploy.failed, main.started, edge.offline, edge.online]
+  edge_offline_after: 5m                # 可选，这就是默认值；edge 断连多久算离线
   telegram:
     bot_token: "123456789:AA..."        # 明文，用时现读，不会出现在任何 API / Web UI / --json 输出里
     chat_id: "-1001234567890"
 
 services:
   noisy-cron:
-    notify: { enabled: false }          # 本服务完全静音
+    notify: { enabled: false }          # 本服务完全静音（只影响 deploy.*，管不着节点事件）
   payments:
     notify:
       events: [deploy.failed, deploy.recovered]   # 替换全局列表，不是追加
@@ -169,22 +171,35 @@ services:
 
 拿 Telegram 凭据：找 [@BotFather](https://t.me/BotFather) `/newbot` 拿 `bot_token`；把 bot 拉进目标频道/群并给发消息权限，然后向频道发一条消息、访问 `https://api.telegram.org/bot<token>/getUpdates` 从返回里读 `chat.id`（频道 id 通常是 `-100` 开头的负数）。
 
-事件词汇表（`notify.events` 与服务级覆盖都只接受这四个，写错在 `hookploy validate` 阶段就报错）：
+事件词汇表分两类作用域，写错事件名在 `hookploy validate` 阶段就报错。
+
+**deploy 作用域**——属于某个服务，可被服务级 `notify.events` 覆盖：
 
 | 事件 | 何时触发 |
 |---|---|
-| `deploy.failed` | 部署以失败告终（**默认唯一开启项**）。含 op 失败、超时、rollout 中途 abort |
+| `deploy.failed` | 部署以失败告终（**默认开启**）。含 op 失败、超时、rollout 中途 abort |
 | `deploy.unreachable` | 目标服务器全程联系不上，main 从未得知结果——刻意与 failed 区分，别把它当成"部署坏了" |
 | `deploy.succeeded` | 部署成功 |
 | `deploy.recovered` | 本次成功，而同一服务上一次是失败/unreachable。它**替代** `deploy.succeeded`，所以只订阅 succeeded 的服务不会收到恢复通知，反之亦然 |
+
+**节点作用域**——属于整个部署而非某个服务，三个**默认全开**，只认顶层 `notify.events`。在服务级 `notify.events` 里写它们会**加载失败**（服务对"main 重启了没有"没有发言权）：
+
+| 事件 | 何时触发 |
+|---|---|
+| `main.started` | main 进程启动，两个监听端口都绑定成功之后。消息带版本号 |
+| `edge.offline` | 某个非 `local` 的 server 断连超过 `edge_offline_after`。消息带节点名、已离线时长、最后已知版本 |
+| `edge.online` | **发过 offline 告警的**节点重新连上。消息带节点名、本次离线总时长、回来时的版本 |
 
 说明：
 
 - **一次部署一条消息**，正文列出每个未成功的实例及其错误，不是每个实例一条。
 - **失败但不通知的两种情况**：整个 rollout 被取消（只发生在 main 关机时取消未派发的波次，不是事故）、部署被更新的一次取代（superseded，它根本没跑）。
 - **重启不刷屏**：main 重启时收尾上个进程遗留的部署会判为失败，但刻意不发通知。
+- **一次离线一条消息**：edge 掉线多久都只发一条 `edge.offline`，回来时配一条 `edge.online`；没跨过阈值的抖动两条都不发。
+- **`edge_offline_after` 要大于 60s**：edge 断流后 main 会保留在途执行 60s 等它重连（§4），这是常态而非事故。阈值设得比它还短会把正常的流断也报成告警。
+- **覆盖"从来没连上"的情况**：判定靠周期巡检（每 30s 比对 `servers:` 与当前在线的 edge），不是靠断连回调。所以 main 重启后一直没起来的 edge 同样会告警，计时从 main 启动算起——这种情况消息里不会有版本号，因为本进程从没见过它。`local: true` 的 server 不参与巡检。
 - **投递是尽力而为**：内存有界队列（满了丢最旧）+ 有限次退避重试，失败记日志放弃，不落库、进程重启会丢。通知从不阻塞部署，也从不影响 webhook 响应速度。
-- `notify:` 整块支持热 reload（§6），改完 `-/reload` 即生效，包括轮换 bot_token。
+- `notify:` 整块支持热 reload（§6），改完 `-/reload` 即生效，包括轮换 bot_token 和调整 `edge_offline_after`（对正在进行中的离线也立刻生效）。
 - `provider: telegram` 却缺 `bot_token`/`chat_id` 会**加载失败**——配了却哑掉比明确关闭更糟。
 - `provider: center`（统一通知中心）是为第二阶段保留的值：schema 已接受，但当前会在 `hookploy validate` 报"not implemented yet"。
 

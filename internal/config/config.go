@@ -43,7 +43,22 @@ type Notify struct {
 	Provider string // "" (off) | "telegram"
 	BaseURL  string // deploy-detail link prefix; "" omits the link
 	Events   []model.EventKind
-	Telegram Telegram
+	// EdgeOfflineAfter is how long an edge must be gone before edge.offline
+	// fires. Always positive after parseNotify.
+	EdgeOfflineAfter time.Duration
+	Telegram         Telegram
+}
+
+// Wants reports whether the global policy asks for kind. It is the
+// node-scoped counterpart of ServiceNotify.Wants: main.started and the
+// edge.* pair belong to no service, so this list is their whole policy.
+func (n Notify) Wants(kind model.EventKind) bool {
+	for _, k := range n.Events {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // Telegram holds the Bot API credentials of the telegram provider.
@@ -177,16 +192,30 @@ func parse(data []byte) (*Config, error) {
 // notification-center backend lands as a second value here.
 const ProviderTelegram = "telegram"
 
+// defaultEdgeOfflineAfter is well past edgehub's 60s reconnect grace, so the
+// stream flapping that grace exists to absorb never reaches Telegram.
+const defaultEdgeOfflineAfter = 5 * time.Minute
+
 // parseNotify validates the global notify block and fills its defaults. A
 // telegram provider missing its credentials fails the load rather than
 // silently going quiet at 3am: a notification channel that is configured but
 // dead is worse than one that is plainly off.
 func parseNotify(raw rawNotify) (Notify, error) {
 	n := Notify{
-		Provider: raw.Provider,
-		BaseURL:  strings.TrimRight(raw.BaseURL, "/"),
-		Events:   model.DefaultEventKinds(),
-		Telegram: Telegram{BotToken: raw.Telegram.BotToken, ChatID: raw.Telegram.ChatID},
+		Provider:         raw.Provider,
+		BaseURL:          strings.TrimRight(raw.BaseURL, "/"),
+		Events:           model.DefaultEventKinds(),
+		EdgeOfflineAfter: defaultEdgeOfflineAfter,
+		Telegram:         Telegram{BotToken: raw.Telegram.BotToken, ChatID: raw.Telegram.ChatID},
+	}
+	// Zero means unset, the same convention defaults.timeout uses. A negative
+	// one parses fine and would quietly turn outage alerting off — the same
+	// "configured but dead" failure the credential check above exists to
+	// prevent — so it fails the load instead.
+	if d := time.Duration(raw.EdgeOfflineAfter); d < 0 {
+		return Notify{}, fmt.Errorf("edge_offline_after must be positive, got %s", d)
+	} else if d > 0 {
+		n.EdgeOfflineAfter = d
 	}
 	switch raw.Provider {
 	case "":
@@ -226,6 +255,12 @@ func parseEventKinds(names []string) ([]model.EventKind, error) {
 // override into the one policy the service actually runs under. An override
 // replaces the event list rather than adding to it, so a service can be made
 // quieter as well as louder.
+//
+// Node events are a service's business either way: naming one in an override
+// fails the load, and inheriting one from the global list drops it silently.
+// The asymmetry is deliberate — the override is something the user wrote and
+// expects to work, while the inherited list is a default they never asked
+// for and should not have to defend against.
 func resolveServiceNotify(rs *rawService, cfg *Config) (ServiceNotify, error) {
 	events := cfg.Notify.Events
 	sn := ServiceNotify{Enabled: true}
@@ -238,10 +273,19 @@ func resolveServiceNotify(rs *rawService, cfg *Config) (ServiceNotify, error) {
 			if events, err = parseEventKinds(*rs.Notify.Events); err != nil {
 				return ServiceNotify{}, fmt.Errorf("events: %w", err)
 			}
+			for _, k := range events {
+				if k.Scope() == model.ScopeNode {
+					return ServiceNotify{}, fmt.Errorf(
+						"events: %q is about a node, not a deploy, and belongs in the top-level notify block", k)
+				}
+			}
 		}
 	}
 	sn.Events = make(map[model.EventKind]bool, len(events))
 	for _, k := range events {
+		if k.Scope() == model.ScopeNode {
+			continue
+		}
 		sn.Events[k] = true
 	}
 	return sn, nil

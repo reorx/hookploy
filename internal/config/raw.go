@@ -27,10 +27,14 @@ type rawGithub struct {
 }
 
 type rawNotify struct {
-	Provider string      `yaml:"provider"`
-	BaseURL  string      `yaml:"base_url"`
-	Events   *[]string   `yaml:"events"` // nil = unset (defaults apply)
-	Telegram rawTelegram `yaml:"telegram"`
+	Provider string    `yaml:"provider"`
+	BaseURL  string    `yaml:"base_url"`
+	Events   *[]string `yaml:"events"` // nil = unset (defaults apply)
+	// EdgeOfflineAfter is how long an edge may stay away before edge.offline
+	// fires. Zero means unset, the same convention defaults.timeout uses; an
+	// explicit 0s would otherwise alert on every server the moment main starts.
+	EdgeOfflineAfter model.Duration `yaml:"edge_offline_after"`
+	Telegram         rawTelegram    `yaml:"telegram"`
 	// A center block is deliberately absent: the notification-center API is
 	// not designed yet, so `provider: center` is rejected at load time rather
 	// than accepting a config shape that would have to be migrated later.

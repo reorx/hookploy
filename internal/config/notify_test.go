@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reorx/hookploy/internal/model"
 )
@@ -192,6 +193,95 @@ func TestNotifyExplicitEmptyEventsIsNotTheDefault(t *testing.T) {
 	}
 	if cfg.Services["web"].Notify.Wants(model.EventDeployFailed) {
 		t.Error("an explicitly empty global list should leave services wanting nothing")
+	}
+}
+
+// Behavior: the default vocabulary subscribes to every node event. Those
+// fire at most once per main restart and once per edge outage, and an
+// install that turned notifications on wants to hear that its fleet went
+// dark without editing a list first.
+func TestNotifyDefaultsIncludeEveryNodeEvent(t *testing.T) {
+	cfg, err := load(t, notifyYAML("", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range model.EventKinds() {
+		if k.Scope() != model.ScopeNode {
+			continue
+		}
+		if !cfg.Notify.Wants(k) {
+			t.Errorf("%q should be on by default", k)
+		}
+	}
+	if cfg.Notify.Wants(model.EventDeploySucceeded) {
+		t.Error("deploy.succeeded must stay opt-in; it fires on every green deploy")
+	}
+}
+
+// Behavior: the edge-offline threshold is a duration with a default, so an
+// install gets outage alerts without configuring anything, and tuning it is
+// the same `5m` spelling as every other duration in the file.
+func TestNotifyEdgeOfflineAfterDefaultsAndParses(t *testing.T) {
+	cfg, err := load(t, notifyYAML("", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.EdgeOfflineAfter != defaultEdgeOfflineAfter {
+		t.Errorf("edge_offline_after = %s, want the %s default", cfg.Notify.EdgeOfflineAfter, defaultEdgeOfflineAfter)
+	}
+
+	cfg, err = load(t, notifyYAML("notify:\n  edge_offline_after: 90s\n", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.EdgeOfflineAfter != 90*time.Second {
+		t.Errorf("edge_offline_after = %s, want 90s", cfg.Notify.EdgeOfflineAfter)
+	}
+}
+
+// Behavior: a negative threshold fails the load. It parses as a duration and
+// would leave outage alerting silently off — the same way a telegram block
+// missing its credentials would leave the whole channel silently off.
+func TestNotifyEdgeOfflineAfterRejectsANegativeThreshold(t *testing.T) {
+	_, err := load(t, notifyYAML("notify:\n  edge_offline_after: -1m\n", ""))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "edge_offline_after") {
+		t.Errorf("error should name the field, got %v", err)
+	}
+}
+
+// Behavior: a service asking for a node event fails the load. A service has
+// no say in whether main restarting is worth a message, so accepting the key
+// would produce a config that reads like it does something it cannot.
+func TestServiceNotifyRejectsNodeScopedEvent(t *testing.T) {
+	_, err := load(t, notifyYAML("", "    notify:\n      events: [deploy.failed, edge.offline]\n"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "edge.offline") || !strings.Contains(err.Error(), "web") {
+		t.Errorf("error should name both the service and the offending event, got %v", err)
+	}
+}
+
+// Behavior: node events never reach a service's policy, not even by
+// inheritance from the global default list — ServiceNotify.Wants is asked
+// only about deploys, and answering true for edge.offline would be a lie
+// waiting for a caller to believe it.
+func TestServiceNotifyNeverInheritsNodeScopedEvents(t *testing.T) {
+	cfg, err := load(t, notifyYAML("", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := cfg.Services["web"].Notify
+	for _, k := range model.EventKinds() {
+		if k.Scope() == model.ScopeNode && web.Wants(k) {
+			t.Errorf("service policy wants %q, but node events are not a service's business", k)
+		}
+	}
+	if !web.Wants(model.EventDeployFailed) {
+		t.Error("filtering node events must not drop the deploy ones alongside them")
 	}
 }
 

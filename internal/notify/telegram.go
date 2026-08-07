@@ -112,34 +112,79 @@ var eventHeadline = map[model.EventKind]string{
 	model.EventDeployUnreachable: "\U0001F7E0 deploy unreachable",
 	model.EventDeployRecovered:   "\U0001F7E2 deploy recovered",
 	model.EventDeploySucceeded:   "✅ deploy succeeded",
+	model.EventMainStarted:       "\U0001F680 main started",
+	model.EventEdgeOffline:       "\U0001F534 edge offline",
+	model.EventEdgeOnline:        "\U0001F7E2 edge online",
 }
 
 // renderTelegram formats an event as Bot API HTML. HTML parse mode was
 // picked over MarkdownV2 because escaping it is three characters that
 // html.EscapeString already handles; MarkdownV2's eighteen are a much easier
 // thing to get wrong on text that comes straight out of a failing command.
+//
+// The split mirrors Event's: the two payloads describe different things and
+// read nothing alike, so each gets its own renderer rather than one function
+// picking its way through fields that half the kinds leave empty.
 func renderTelegram(ev Event) string {
+	switch {
+	case ev.Deploy != nil:
+		return renderDeploy(ev.Kind, ev.CreatedAt, ev.Deploy)
+	case ev.Node != nil:
+		return renderNode(ev.Kind, ev.Node)
+	default:
+		return eventHeadline[ev.Kind] + "\n"
+	}
+}
+
+func renderDeploy(kind model.EventKind, createdAt time.Time, d *DeployEvent) string {
 	var b strings.Builder
-	subject := ev.Service
-	if ev.Task != "" {
-		subject += " / " + ev.Task
+	subject := d.Service
+	if d.Task != "" {
+		subject += " / " + d.Task
 	}
-	fmt.Fprintf(&b, "%s\n<b>%s</b>\n", eventHeadline[ev.Kind], esc(subject))
-	if ev.Error != "" {
-		fmt.Fprintf(&b, "%s\n", esc(ev.Error))
+	fmt.Fprintf(&b, "%s\n<b>%s</b>\n", eventHeadline[kind], esc(subject))
+	if d.Error != "" {
+		fmt.Fprintf(&b, "%s\n", esc(d.Error))
 	}
-	for _, in := range ev.Instances {
+	for _, in := range d.Instances {
 		fmt.Fprintf(&b, "• %s (%s) %s", esc(in.Instance), esc(in.Server), in.Status)
 		if in.Error != "" {
 			fmt.Fprintf(&b, ": %s", esc(in.Error))
 		}
 		b.WriteByte('\n')
 	}
-	if !ev.FinishedAt.IsZero() && !ev.CreatedAt.IsZero() {
-		fmt.Fprintf(&b, "took %s\n", ev.FinishedAt.Sub(ev.CreatedAt).Round(time.Second))
+	if !d.FinishedAt.IsZero() && !createdAt.IsZero() {
+		fmt.Fprintf(&b, "took %s\n", d.FinishedAt.Sub(createdAt).Round(time.Second))
 	}
-	if ev.DeployURL != "" {
-		fmt.Fprintf(&b, "%s\n", esc(ev.DeployURL))
+	if d.URL != "" {
+		fmt.Fprintf(&b, "%s\n", esc(d.URL))
+	}
+	return b.String()
+}
+
+// renderNode reports a node's state. Which node it is comes from Type and
+// what happened from Kind — main has only ever one thing to say, so its
+// version is the whole message, while an edge leads with its name, because
+// which one went dark is what anyone reads for first.
+func renderNode(kind model.EventKind, n *NodeEvent) string {
+	var b strings.Builder
+	b.WriteString(eventHeadline[kind])
+	b.WriteByte('\n')
+	if n.Type == NodeMain {
+		fmt.Fprintf(&b, "<b>%s</b>\n", esc(n.ReleaseVersion))
+		return b.String()
+	}
+	fmt.Fprintf(&b, "<b>%s</b>\n", esc(n.Name))
+	down := n.DownDuration.Round(time.Second)
+	version := "last known version"
+	if kind == model.EventEdgeOnline {
+		fmt.Fprintf(&b, "back after %s offline\n", down)
+		version = "version"
+	} else {
+		fmt.Fprintf(&b, "offline for %s\n", down)
+	}
+	if n.ReleaseVersion != "" {
+		fmt.Fprintf(&b, "%s %s\n", version, esc(n.ReleaseVersion))
 	}
 	return b.String()
 }

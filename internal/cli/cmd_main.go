@@ -19,6 +19,7 @@ import (
 
 	"github.com/reorx/hookploy/internal/config"
 	"github.com/reorx/hookploy/internal/edgehub"
+	"github.com/reorx/hookploy/internal/edgewatch"
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
 	"github.com/reorx/hookploy/internal/grpcapi"
@@ -28,6 +29,7 @@ import (
 	"github.com/reorx/hookploy/internal/runner"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/store"
+	"github.com/reorx/hookploy/internal/version"
 	"github.com/reorx/hookploy/internal/webui"
 )
 
@@ -100,6 +102,17 @@ func cmdMain(ctx *Context, args []string) int {
 	// One hub across every edge transport: it owns attachment state and the
 	// per-server executors, so Edges() is already the merged view.
 	hub := edgehub.New(reg, logger)
+	// The watcher compares that merged view against the servers the config
+	// declares. Polling both sides is what catches the edge that never came
+	// back after this restart — it never disconnected, so a disconnect hook
+	// would never have seen it.
+	watcher := &edgewatch.Watcher{
+		Config:    func() *config.Config { return cfgVal.Load() },
+		Edges:     hub.Edges,
+		Logger:    logger,
+		OnOffline: func(o edgewatch.Outage) { notifier.EdgeOffline(o.Server, o.Version, o.Duration) },
+		OnOnline:  func(o edgewatch.Outage) { notifier.EdgeOnline(o.Server, o.Version, o.Duration) },
+	}
 	grpcSrv := &grpcapi.Server{
 		Store:  st,
 		Hub:    hub,
@@ -141,16 +154,28 @@ func cmdMain(ctx *Context, args []string) int {
 		}),
 	)
 	pb.RegisterHookployServer(grpcServer, grpcSrv)
+
+	// Both ports are bound here rather than inside the serve goroutines, so
+	// an address already in use is an exit code instead of a "main started"
+	// notification for a process that never served anything.
+	httpLis, err := net.Listen("tcp", cfg.Listen.HTTP)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "http listen: %v\n", err)
+		return 1
+	}
 	grpcLis, err := net.Listen("tcp", cfg.Listen.GRPC)
 	if err != nil {
+		_ = httpLis.Close()
 		fmt.Fprintf(ctx.Stderr, "grpc listen: %v\n", err)
 		return 1
 	}
+	notifier.MainStarted(version.Version)
+	watcher.Start()
 
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Printf("hookploy main listening on http://%s grpc://%s (db: %s)", cfg.Listen.HTTP, cfg.Listen.GRPC, cfg.DB)
-		errCh <- httpServer.ListenAndServe()
+		errCh <- httpServer.Serve(httpLis)
 	}()
 	go func() {
 		if err := grpcServer.Serve(grpcLis); err != nil {
@@ -176,6 +201,10 @@ func cmdMain(ctx *Context, args []string) int {
 				continue
 			}
 			logger.Printf("received %s, shutting down", sig)
+			// The watcher goes first: closing the listeners drops every edge
+			// at once, and a poll landing in that window would report the
+			// fleet offline when it is main that is leaving.
+			watcher.Shutdown()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = httpServer.Shutdown(shutdownCtx)
 			cancel()

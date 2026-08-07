@@ -197,6 +197,13 @@ servers:
 services:
   a: { server: s1, dir: /a, notify: { enabld: false }, deploy: [compose.up] }
 `, "additional properties 'enabld' not allowed"},
+		// A service's list is narrower than the global one: node events are
+		// real vocabulary but belong to no service, so the schema has to
+		// reject them here while still accepting them up top.
+		{"node event in a service's notify list", minimalServers + `
+services:
+  a: { server: s1, dir: /a, notify: { events: [edge.offline] }, deploy: [compose.up] }
+`, "value must be one of"},
 		{"unknown op", minimalServers + `
 services:
   a: { server: s1, dir: /a, deploy: [compose.blow] }

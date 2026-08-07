@@ -47,30 +47,28 @@ func (h *Hub) buildEvent(cfg *config.Config, d *model.Deploy) (Event, bool, erro
 	if err != nil {
 		return Event{}, false, err
 	}
-	ev := Event{
-		Kind:      kind,
-		Service:   d.Service,
-		Task:      d.Task,
-		DeployID:  d.ID,
-		Status:    d.Status,
-		Error:     d.Error,
-		CreatedAt: d.CreatedAt,
+	de := &DeployEvent{
+		Service:  d.Service,
+		Task:     d.Task,
+		DeployID: d.ID,
+		Status:   d.Status,
+		Error:    d.Error,
 	}
 	if d.FinishedAt != nil {
-		ev.FinishedAt = *d.FinishedAt
+		de.FinishedAt = *d.FinishedAt
 	}
 	if cfg.Notify.BaseURL != "" {
-		ev.DeployURL = cfg.Notify.BaseURL + "/ui/deploys/" + d.ID
+		de.URL = cfg.Notify.BaseURL + "/ui/deploys/" + d.ID
 	}
 	for _, ex := range execs {
 		if ex.Status == model.StatusSucceeded {
 			continue
 		}
-		ev.Instances = append(ev.Instances, InstanceResult{
+		de.Instances = append(de.Instances, InstanceResult{
 			Instance: ex.Instance, Server: ex.Server, Status: ex.Status, Error: ex.Error,
 		})
 	}
-	return ev, true, nil
+	return Event{Kind: kind, CreatedAt: d.CreatedAt, Deploy: de}, true, nil
 }
 
 // classify maps a settled deploy's status onto the event vocabulary. A

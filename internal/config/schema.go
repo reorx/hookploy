@@ -124,10 +124,14 @@ func JSONSchema() ([]byte, error) {
 						Description: "Web UI 对外可访问的根地址，用于在消息里拼出 /ui/deploys/<id> 链接；留空则消息不带链接。",
 					},
 					"events": {
-						Type:        "array",
-						Items:       &jsonSchema{Type: "string", Enum: eventKindEnum()},
-						Description: `要推送的事件，省略时默认只含 "deploy.failed"。可被服务级 notify.events 覆盖。`,
+						Type:  "array",
+						Items: &jsonSchema{Type: "string", Enum: eventKindEnum()},
+						Description: `要推送的事件，省略时默认为 ["deploy.failed", "main.started", "edge.offline", "edge.online"]。` +
+							`deploy.* 可被服务级 notify.events 覆盖；main.* / edge.* 是节点事件，不属于任何服务，只认这一份全局列表。`,
 					},
+					"edge_offline_after": durationRef(
+						"edge 断连超过该时长即推送 edge.offline，恢复连接时推送 edge.online；默认 5m。" +
+							"应大于 edge 重连宽限（60s），否则一次正常的流断也会告警。"),
 					"telegram": {
 						Type:        "object",
 						Description: "provider: telegram 时必填（缺任一项则 hookploy validate 失败）。",
@@ -193,11 +197,20 @@ func JSONSchema() ([]byte, error) {
 
 // eventKindEnum renders the notify vocabulary as a schema enum, so a new
 // model.EventKind shows up in the schema without touching this file.
-func eventKindEnum() []any {
-	kinds := model.EventKinds()
-	out := make([]any, len(kinds))
-	for i, k := range kinds {
-		out[i] = string(k)
+func eventKindEnum() []any { return kindEnum("") }
+
+// deployEventKindEnum is the service-level subset: a service's notify.events
+// may only name deploy outcomes, which the loader also enforces.
+func deployEventKindEnum() []any { return kindEnum(model.ScopeDeploy) }
+
+// kindEnum lists the vocabulary, narrowed to one scope when only is set.
+func kindEnum(only model.EventScope) []any {
+	out := []any{}
+	for _, k := range model.EventKinds() {
+		if only != "" && k.Scope() != only {
+			continue
+		}
+		out = append(out, string(k))
 	}
 	return out
 }
@@ -235,8 +248,8 @@ func serviceSchema() *jsonSchema {
 					"enabled": {Type: "boolean", Description: "false 表示本服务完全静音，默认 true。"},
 					"events": {
 						Type:        "array",
-						Items:       &jsonSchema{Type: "string", Enum: eventKindEnum()},
-						Description: "替换（而非追加）本服务的事件列表；省略表示继承全局 notify.events。",
+						Items:       &jsonSchema{Type: "string", Enum: deployEventKindEnum()},
+						Description: "替换（而非追加）本服务的事件列表；省略表示继承全局 notify.events 里的 deploy.* 部分。仅接受 deploy.* 事件。",
 					},
 				},
 				AdditionalProperties: false,

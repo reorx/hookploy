@@ -139,16 +139,17 @@ func AllTerminal(statuses []Status) bool {
 	return true
 }
 
-// EventKind names one notification-worthy occurrence in a deploy's life.
-// The vocabulary is deliberately wider than Status: EventDeployRecovered
+// EventKind names one notification-worthy occurrence in the installation's
+// life. The vocabulary is deliberately wider than Status: EventDeployRecovered
 // names a *transition* (this run succeeded, the one before it did not) that
-// no single status captures.
+// no single status captures, and the node kinds do not describe a deploy at
+// all.
 //
 // It lives here rather than in internal/notify because internal/config has
 // to validate hookploy.yaml's notify.events lists, and config cannot import
 // notify — notify holds a func() *config.Config closure. model owns the
 // vocabulary; internal/notify owns the rules that resolve one from a
-// settled deploy.
+// settled deploy or from a node changing state.
 type EventKind string
 
 const (
@@ -156,12 +157,43 @@ const (
 	EventDeploySucceeded   EventKind = "deploy.succeeded"
 	EventDeployRecovered   EventKind = "deploy.recovered"
 	EventDeployUnreachable EventKind = "deploy.unreachable"
+	EventMainStarted       EventKind = "main.started"
+	EventEdgeOffline       EventKind = "edge.offline"
+	EventEdgeOnline        EventKind = "edge.online"
+)
+
+// EventScope tells a deploy outcome apart from a node's own comings and
+// goings. A service can only ask about its own deploys — main restarting or
+// an edge dropping off the network is a fact about the installation, not
+// about any one service — so a service's notify.events may only name
+// ScopeDeploy kinds, and node kinds are matched against the global list
+// instead.
+type EventScope string
+
+const (
+	ScopeDeploy EventScope = "deploy"
+	ScopeNode   EventScope = "node"
 )
 
 // EventKinds is the complete vocabulary in a stable order. Config validation
 // and the JSON Schema both derive from it, so a new kind is added once.
 func EventKinds() []EventKind {
-	return []EventKind{EventDeployFailed, EventDeploySucceeded, EventDeployRecovered, EventDeployUnreachable}
+	return []EventKind{
+		EventDeployFailed, EventDeploySucceeded, EventDeployRecovered, EventDeployUnreachable,
+		EventMainStarted, EventEdgeOffline, EventEdgeOnline,
+	}
+}
+
+// Scope reports which half of the vocabulary k belongs to. It doubles as the
+// discriminator for notify.Event's payload: ScopeDeploy fills its deploy
+// half, ScopeNode its node half.
+func (k EventKind) Scope() EventScope {
+	switch k {
+	case EventMainStarted, EventEdgeOffline, EventEdgeOnline:
+		return ScopeNode
+	default:
+		return ScopeDeploy
+	}
 }
 
 // Valid reports whether k is one of EventKinds.
@@ -175,8 +207,14 @@ func (k EventKind) Valid() bool {
 }
 
 // DefaultEventKinds is what notify.events falls back to when omitted:
-// failures only, because those are the ones worth waking someone for.
-func DefaultEventKinds() []EventKind { return []EventKind{EventDeployFailed} }
+// deploy failures, plus every node kind. The node kinds are cheap — one
+// message per main restart, one per edge outage — and an install that turned
+// notifications on almost certainly wants to hear that half of its fleet
+// went dark. The remaining deploy kinds stay opt-in because they fire on
+// every green deploy.
+func DefaultEventKinds() []EventKind {
+	return []EventKind{EventDeployFailed, EventMainStarted, EventEdgeOffline, EventEdgeOnline}
+}
 
 // EdgeInfo is the live state of one connected edge session.
 type EdgeInfo struct {

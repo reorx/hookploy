@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/reorx/hookploy/internal/config"
+	"github.com/reorx/hookploy/internal/edgewatch"
 	"github.com/reorx/hookploy/internal/model"
 )
 
@@ -77,15 +78,17 @@ func (th *telegramHarness) reject(status int, body string) {
 func failedEvent() Event {
 	now := time.Now()
 	return Event{
-		Kind:     model.EventDeployFailed,
-		Service:  "web",
-		DeployID: "dp_abc",
-		Status:   model.StatusFailed,
-		Instances: []InstanceResult{
-			{Instance: "a", Server: "s1", Status: model.StatusFailed, Error: "op 2 (compose.up): exit 1"},
+		Kind:      model.EventDeployFailed,
+		CreatedAt: now,
+		Deploy: &DeployEvent{
+			Service:  "web",
+			DeployID: "dp_abc",
+			Status:   model.StatusFailed,
+			Instances: []InstanceResult{
+				{Instance: "a", Server: "s1", Status: model.StatusFailed, Error: "op 2 (compose.up): exit 1"},
+			},
+			FinishedAt: now.Add(42 * time.Second),
 		},
-		CreatedAt:  now,
-		FinishedAt: now.Add(42 * time.Second),
 	}
 }
 
@@ -132,8 +135,8 @@ func TestTelegramRejectionIsAnErrorCarryingTheReason(t *testing.T) {
 func TestTelegramEscapesInterpolatedText(t *testing.T) {
 	th := newTelegramHarness(t)
 	ev := failedEvent()
-	ev.Instances[0].Error = `exec: <script> & "quoted"`
-	ev.Service = "a<b"
+	ev.Deploy.Instances[0].Error = `exec: <script> & "quoted"`
+	ev.Deploy.Service = "a<b"
 	if err := th.provider.Send(context.Background(), ev); err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +163,11 @@ func TestTelegramIncludesTheDeployLinkWhenSet(t *testing.T) {
 	}
 
 	ev := failedEvent()
-	ev.DeployURL = "https://deploy.example.com/ui/deploys/dp_abc"
+	ev.Deploy.URL = "https://deploy.example.com/ui/deploys/dp_abc"
 	if err := th.provider.Send(context.Background(), ev); err != nil {
 		t.Fatal(err)
 	}
-	if second := th.msgs()[1].Text; !strings.Contains(second, ev.DeployURL) {
+	if second := th.msgs()[1].Text; !strings.Contains(second, ev.Deploy.URL) {
 		t.Errorf("link missing from the message:\n%s", second)
 	}
 }
@@ -174,14 +177,118 @@ func TestTelegramIncludesTheDeployLinkWhenSet(t *testing.T) {
 func TestTelegramRendersDeployLevelErrors(t *testing.T) {
 	th := newTelegramHarness(t)
 	ev := Event{
-		Kind: model.EventDeployFailed, Service: "web", DeployID: "dp_x",
-		Status: model.StatusFailed, Error: "payload.digest is not a sha256",
+		Kind: model.EventDeployFailed,
+		Deploy: &DeployEvent{
+			Service: "web", DeployID: "dp_x",
+			Status: model.StatusFailed, Error: "payload.digest is not a sha256",
+		},
 	}
 	if err := th.provider.Send(context.Background(), ev); err != nil {
 		t.Fatal(err)
 	}
 	if text := th.msgs()[0].Text; !strings.Contains(text, "payload.digest is not a sha256") {
 		t.Errorf("deploy-level error missing:\n%s", text)
+	}
+}
+
+// Behavior: main.started renders as the version and nothing else — the
+// deploy body has no service, no instances and no timing to show.
+func TestTelegramRendersMainStarted(t *testing.T) {
+	th := newTelegramHarness(t)
+	ev := Event{
+		Kind: model.EventMainStarted,
+		Node: &NodeEvent{Type: NodeMain, Name: "main", ReleaseVersion: "v0.4.1"},
+	}
+	if err := th.provider.Send(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	text := th.msgs()[0].Text
+	if !strings.Contains(text, "main started") || !strings.Contains(text, "v0.4.1") {
+		t.Errorf("startup message should headline the event and name the version:\n%s", text)
+	}
+	t.Logf("rendered message:\n%s", text)
+}
+
+// Behavior: an outage message leads with the server, then says how long it
+// has been gone and what it was last running.
+func TestTelegramRendersEdgeOffline(t *testing.T) {
+	th := newTelegramHarness(t)
+	ev := Event{
+		Kind: model.EventEdgeOffline,
+		Node: &NodeEvent{
+			Type: NodeEdge, Name: "ali-hk-01", ReleaseVersion: "v0.4.1",
+			DownDuration: 5*time.Minute + 12*time.Second,
+		},
+	}
+	if err := th.provider.Send(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	text := th.msgs()[0].Text
+	for _, want := range []string{"edge offline", "ali-hk-01", "5m12s", "v0.4.1"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("outage message is missing %q:\n%s", want, text)
+		}
+	}
+	t.Logf("rendered message:\n%s", text)
+}
+
+// Behavior: the all-clear reports the whole outage and the version the edge
+// came back on — a rolling edge upgrade is the common reason for one.
+func TestTelegramRendersEdgeOnline(t *testing.T) {
+	th := newTelegramHarness(t)
+	ev := Event{
+		Kind: model.EventEdgeOnline,
+		Node: &NodeEvent{
+			Type: NodeEdge, Name: "ali-hk-01", ReleaseVersion: "v0.4.2",
+			DownDuration: 12*time.Minute + 34*time.Second,
+		},
+	}
+	if err := th.provider.Send(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	text := th.msgs()[0].Text
+	for _, want := range []string{"edge online", "ali-hk-01", "12m34s", "v0.4.2"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("all-clear is missing %q:\n%s", want, text)
+		}
+	}
+	t.Logf("rendered message:\n%s", text)
+}
+
+// Behavior: an edge that has not been seen since main started has no version
+// to report, and the message says nothing rather than something empty.
+func TestTelegramOmitsAnUnknownEdgeVersion(t *testing.T) {
+	th := newTelegramHarness(t)
+	ev := Event{
+		Kind: model.EventEdgeOffline,
+		Node: &NodeEvent{Type: NodeEdge, Name: "never-seen", DownDuration: time.Hour},
+	}
+	if err := th.provider.Send(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if text := th.msgs()[0].Text; strings.Contains(text, "version") {
+		t.Errorf("no version is known, none should be claimed:\n%s", text)
+	}
+}
+
+// Behavior: node fields are escaped too. Server names come from
+// hookploy.yaml rather than from a payload, but the rule is every
+// interpolated value — an exception here is one a future field inherits.
+func TestTelegramEscapesNodeFields(t *testing.T) {
+	th := newTelegramHarness(t)
+	ev := Event{
+		Kind: model.EventEdgeOffline,
+		Node: &NodeEvent{Type: NodeEdge, Name: "a<b>", ReleaseVersion: "v1&2"},
+	}
+	if err := th.provider.Send(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	text := th.msgs()[0].Text
+	if strings.Contains(text, "a<b>") || strings.Contains(text, "v1&2") {
+		t.Errorf("node fields were not escaped:\n%s", text)
+	}
+	if !strings.Contains(text, "a&lt;b&gt;") || !strings.Contains(text, "v1&amp;2") {
+		t.Errorf("escaped forms missing:\n%s", text)
 	}
 }
 
@@ -231,6 +338,42 @@ func TestHubDeliversThroughTheRealTelegramProvider(t *testing.T) {
 		t.Errorf("message is missing the deploy link:\n%s", msg.Text)
 	}
 	t.Logf("rendered message:\n%s", msg.Text)
+}
+
+// Behavior: the pieces cmd_main wires together turn a server nobody attached
+// for into a real Bot API call. The watcher, the Hub and the renderer are
+// each covered on their own; this is the composition between them, which is
+// the part only main is responsible for getting right.
+func TestWatcherOutageReachesTheBotAPI(t *testing.T) {
+	th := newTelegramHarness(t)
+	h := newHarness(t, telegramOn+"  edge_offline_after: 10ms\n", "")
+	h.hub.newProvider = func(n config.Notify) (Provider, error) {
+		p, err := providerFor(n, th.provider.http)
+		if err != nil {
+			return nil, err
+		}
+		p.(*telegramProvider).apiBase = th.provider.apiBase
+		return p, nil
+	}
+	h.hub.Start()
+
+	attached := map[string]model.EdgeInfo{}
+	w := &edgewatch.Watcher{
+		Config:    h.config,
+		Edges:     func() map[string]model.EdgeInfo { return attached },
+		Interval:  2 * time.Millisecond,
+		OnOffline: func(o edgewatch.Outage) { h.hub.EdgeOffline(o.Server, o.Version, o.Duration) },
+		OnOnline:  func(o edgewatch.Outage) { h.hub.EdgeOnline(o.Server, o.Version, o.Duration) },
+	}
+	w.Start()
+	defer w.Shutdown()
+
+	waitFor(t, "the outage to reach the Bot API", func() bool { return len(th.msgs()) == 1 })
+	text := th.msgs()[0].Text
+	if !strings.Contains(text, "edge offline") || !strings.Contains(text, "edge-01") {
+		t.Errorf("message does not report the outage:\n%s", text)
+	}
+	t.Logf("rendered message:\n%s", text)
 }
 
 // Behavior: a transport failure never reveals the bot token. The Bot API puts

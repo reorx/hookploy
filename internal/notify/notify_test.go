@@ -62,6 +62,7 @@ const baseYAML = `
 servers:
   s1: { local: true }
   s2: { local: true }
+  edge-01: {}
 `
 
 // newHarness builds a Hub over a real temp store and a fake provider. notify
@@ -201,17 +202,17 @@ func TestFailedDeployIsReportedWithPerInstanceErrors(t *testing.T) {
 	if ev.Kind != model.EventDeployFailed {
 		t.Errorf("kind = %q, want deploy.failed", ev.Kind)
 	}
-	if ev.Service != "web" || ev.DeployID != d.ID {
+	if ev.Deploy.Service != "web" || ev.Deploy.DeployID != d.ID {
 		t.Errorf("event does not identify the deploy: %+v", ev)
 	}
-	if len(ev.Instances) != 2 {
-		t.Fatalf("want both non-succeeded instances listed, got %+v", ev.Instances)
+	if len(ev.Deploy.Instances) != 2 {
+		t.Fatalf("want both non-succeeded instances listed, got %+v", ev.Deploy.Instances)
 	}
-	if ev.Instances[0].Error == "" {
+	if ev.Deploy.Instances[0].Error == "" {
 		t.Error("the failing instance's error must survive into the event")
 	}
-	if ev.Instances[1].Status != model.StatusCanceled {
-		t.Errorf("gated instance status = %q, want canceled", ev.Instances[1].Status)
+	if ev.Deploy.Instances[1].Status != model.StatusCanceled {
+		t.Errorf("gated instance status = %q, want canceled", ev.Deploy.Instances[1].Status)
 	}
 }
 
@@ -238,11 +239,11 @@ func TestBuildFailureReportsDeployLevelError(t *testing.T) {
 	if ev.Kind != model.EventDeployFailed {
 		t.Errorf("kind = %q, want deploy.failed", ev.Kind)
 	}
-	if ev.Error != "payload.digest is not a sha256" {
-		t.Errorf("deploy-level error lost: %q", ev.Error)
+	if ev.Deploy.Error != "payload.digest is not a sha256" {
+		t.Errorf("deploy-level error lost: %q", ev.Deploy.Error)
 	}
-	if len(ev.Instances) != 0 {
-		t.Errorf("a deploy with no executions must list no instances, got %+v", ev.Instances)
+	if len(ev.Deploy.Instances) != 0 {
+		t.Errorf("a deploy with no executions must list no instances, got %+v", ev.Deploy.Instances)
 	}
 }
 
@@ -477,7 +478,7 @@ func TestDeployLinkFollowsBaseURL(t *testing.T) {
 	d := h.settle("web", model.StatusFailed, model.StatusFailed)
 	h.hub.Notify(d.ID)
 	waitFor(t, "the notification", func() bool { return h.provider.count() == 1 })
-	if url := h.provider.events()[0].DeployURL; url != "" {
+	if url := h.provider.events()[0].Deploy.URL; url != "" {
 		t.Errorf("no base_url configured, want no link, got %q", url)
 	}
 
@@ -487,7 +488,7 @@ func TestDeployLinkFollowsBaseURL(t *testing.T) {
 	h2.hub.Notify(d2.ID)
 	waitFor(t, "the linked notification", func() bool { return h2.provider.count() == 1 })
 	want := "https://deploy.example.com/ui/deploys/" + d2.ID
-	if url := h2.provider.events()[0].DeployURL; url != want {
+	if url := h2.provider.events()[0].Deploy.URL; url != want {
 		t.Errorf("link = %q, want %q", url, want)
 	}
 }
@@ -559,3 +560,142 @@ func TestNotifyReturnsImmediatelyWhileDeliveryIsStuck(t *testing.T) {
 type providerFunc func(ctx context.Context, ev Event) error
 
 func (f providerFunc) Send(ctx context.Context, ev Event) error { return f(ctx, ev) }
+
+// ── node events ────────────────────────────────────────────────────────────
+
+// Behavior: main coming up reports its version, under the default policy and
+// without anyone editing notify.events first.
+func TestMainStartedReportsTheVersion(t *testing.T) {
+	h := newHarness(t, telegramOn, "")
+	h.hub.Start()
+
+	h.hub.MainStarted("v1.2.3")
+	waitFor(t, "the startup notification", func() bool { return h.provider.count() == 1 })
+
+	ev := h.provider.events()[0]
+	if ev.Kind != model.EventMainStarted {
+		t.Errorf("kind = %q, want main.started", ev.Kind)
+	}
+	if ev.Deploy != nil {
+		t.Errorf("a node event must carry no deploy payload, got %+v", ev.Deploy)
+	}
+	if ev.Node == nil || ev.Node.Type != NodeMain || ev.Node.ReleaseVersion != "v1.2.3" {
+		t.Errorf("node payload = %+v, want the main node at v1.2.3", ev.Node)
+	}
+	if ev.CreatedAt.IsZero() {
+		t.Error("the Hub stamps CreatedAt when a node event is queued")
+	}
+}
+
+// Behavior: an edge outage names the server, how long it has been gone and
+// the version it was last seen running — enough to act on without opening
+// the UI.
+func TestEdgeOfflineNamesTheServerAndTheOutage(t *testing.T) {
+	h := newHarness(t, telegramOn, "")
+	h.hub.Start()
+
+	h.hub.EdgeOffline("edge-01", "v1.2.3", 7*time.Minute)
+	waitFor(t, "the outage notification", func() bool { return h.provider.count() == 1 })
+
+	n := h.provider.events()[0].Node
+	if n == nil {
+		t.Fatal("edge.offline must carry a node payload")
+	}
+	if n.Type != NodeEdge || n.Name != "edge-01" {
+		t.Errorf("node = %+v, want the edge-01 edge", n)
+	}
+	if n.DownDuration != 7*time.Minute || n.ReleaseVersion != "v1.2.3" {
+		t.Errorf("node = %+v, want 7m down at v1.2.3", n)
+	}
+}
+
+// Behavior: the all-clear is its own kind, so subscribing to outages and
+// subscribing to recoveries are separate choices.
+func TestEdgeOnlineIsItsOwnKind(t *testing.T) {
+	h := newHarness(t, telegramOn, "")
+	h.hub.Start()
+
+	h.hub.EdgeOnline("edge-01", "v1.2.4", 9*time.Minute)
+	waitFor(t, "the all-clear", func() bool { return h.provider.count() == 1 })
+
+	ev := h.provider.events()[0]
+	if ev.Kind != model.EventEdgeOnline {
+		t.Errorf("kind = %q, want edge.online", ev.Kind)
+	}
+	if ev.Node.DownDuration != 9*time.Minute {
+		t.Errorf("the all-clear should report the whole outage, got %s", ev.Node.DownDuration)
+	}
+}
+
+// Behavior: node events answer to the global list and nothing else. A
+// service cannot mute them, because they are not about a service — this is
+// the counterpart of TestMutedServiceReportsNothing.
+func TestNodeEventsIgnoreServicePolicy(t *testing.T) {
+	h := newHarness(t, telegramOn, "    notify: { enabled: false }\n")
+	h.hub.Start()
+
+	h.hub.MainStarted("v1.2.3")
+	waitFor(t, "the startup notification", func() bool { return h.provider.count() == 1 })
+}
+
+// Behavior: dropping a node kind from the global list silences it, and does
+// so at delivery time — a reload during a retry is honored, exactly as it is
+// on the deploy path.
+func TestNodeEventDroppedFromTheGlobalListIsSilent(t *testing.T) {
+	h := newHarness(t, telegramOn+"  events: [deploy.failed]\n", "")
+	h.hub.Start()
+
+	h.hub.EdgeOffline("edge-01", "", time.Minute)
+	waitFor(t, "the event to be dropped", func() bool { return h.hub.queueLen() == 0 })
+	if h.provider.count() != 0 {
+		t.Errorf("edge.offline is not subscribed, got %+v", h.provider.events())
+	}
+}
+
+// Behavior: notifications being off drops node events before they ever
+// queue, the same as it does deploys.
+func TestNoProviderMeansNoNodeEventIsQueued(t *testing.T) {
+	h := newHarness(t, "", "")
+	h.hub.Start()
+
+	h.hub.MainStarted("v1.2.3")
+	h.hub.EdgeOffline("edge-01", "", time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	if n := h.hub.queueLen(); n != 0 {
+		t.Errorf("queued %d node events with notify off, want 0", n)
+	}
+}
+
+// Behavior: a repeat of the same news about the same node collapses, while
+// the offline/online pair and two different servers stay distinct. The
+// watcher already fires once per outage; this keeps a future second producer
+// from turning into a double message.
+func TestQueuedNodeEventsDedupePerNodeAndKind(t *testing.T) {
+	h := newHarness(t, telegramOn, "")
+	h.hub.QueueCap = 8 // no Start: nothing drains, so the queue can be read
+
+	h.hub.EdgeOffline("edge-01", "", time.Minute)
+	h.hub.EdgeOffline("edge-01", "", 2*time.Minute)
+	if n := h.hub.queueLen(); n != 1 {
+		t.Fatalf("queued %d copies of one outage, want 1", n)
+	}
+	h.hub.EdgeOffline("edge-02", "", time.Minute)
+	h.hub.EdgeOnline("edge-01", "", 3*time.Minute)
+	if n := h.hub.queueLen(); n != 3 {
+		t.Errorf("queue holds %d, want the other server and the all-clear alongside", n)
+	}
+}
+
+// Behavior: a node event queued moments before shutdown still goes out —
+// main.started is queued during startup, but an outage detected seconds
+// before a restart is exactly the one worth keeping.
+func TestShutdownFlushesQueuedNodeEvents(t *testing.T) {
+	h := newHarness(t, telegramOn, "")
+	h.hub.Start()
+
+	h.hub.EdgeOffline("edge-01", "v1", time.Hour)
+	h.hub.Shutdown()
+	if h.provider.count() != 1 {
+		t.Errorf("delivered %d events across shutdown, want 1", h.provider.count())
+	}
+}

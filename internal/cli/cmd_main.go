@@ -19,14 +19,17 @@ import (
 
 	"github.com/reorx/hookploy/internal/config"
 	"github.com/reorx/hookploy/internal/edgehub"
+	"github.com/reorx/hookploy/internal/edgewatch"
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
 	"github.com/reorx/hookploy/internal/grpcapi"
 	"github.com/reorx/hookploy/internal/httpapi"
+	"github.com/reorx/hookploy/internal/notify"
 	"github.com/reorx/hookploy/internal/pb"
 	"github.com/reorx/hookploy/internal/runner"
 	"github.com/reorx/hookploy/internal/scheduler"
 	"github.com/reorx/hookploy/internal/store"
+	"github.com/reorx/hookploy/internal/version"
 	"github.com/reorx/hookploy/internal/webui"
 )
 
@@ -72,11 +75,18 @@ func cmdMain(ctx *Context, args []string) int {
 	}
 	registerLocals(cfg)
 
+	notifier := notify.New(st, func() *config.Config { return cfgVal.Load() }, logger)
+	notifier.Start()
+
 	sched := scheduler.New(st, reg)
+	// Wired after Recover on purpose: closing out rollouts the previous
+	// process abandoned is not news, and Recover runs before the listeners
+	// are even up.
 	if err := sched.Recover(); err != nil {
 		fmt.Fprintf(ctx.Stderr, "recover: %v\n", err)
 		return 1
 	}
+	sched.Notify = notifier.Notify
 
 	reload := func() error {
 		c2, err := config.Load(*file)
@@ -92,6 +102,17 @@ func cmdMain(ctx *Context, args []string) int {
 	// One hub across every edge transport: it owns attachment state and the
 	// per-server executors, so Edges() is already the merged view.
 	hub := edgehub.New(reg, logger)
+	// The watcher compares that merged view against the servers the config
+	// declares. Polling both sides is what catches the edge that never came
+	// back after this restart — it never disconnected, so a disconnect hook
+	// would never have seen it.
+	watcher := &edgewatch.Watcher{
+		Config:    func() *config.Config { return cfgVal.Load() },
+		Edges:     hub.Edges,
+		Logger:    logger,
+		OnOffline: func(o edgewatch.Outage) { notifier.EdgeOffline(o.Server, o.Version, o.Duration) },
+		OnOnline:  func(o edgewatch.Outage) { notifier.EdgeOnline(o.Server, o.Version, o.Duration) },
+	}
 	grpcSrv := &grpcapi.Server{
 		Store:  st,
 		Hub:    hub,
@@ -103,6 +124,9 @@ func cmdMain(ctx *Context, args []string) int {
 		Sched:  sched,
 		Config: func() *config.Config { return cfgVal.Load() },
 		Reload: reload,
+		// A deploy that fails to build never reaches the scheduler, so the
+		// HTTP layer reports that one itself.
+		Notify: notifier.Notify,
 		Edges:  hub.Edges,
 		// Serving the SSE edge transport on the HTTP listener: same host,
 		// same port, no gRPC-aware proxy needed in front.
@@ -130,16 +154,28 @@ func cmdMain(ctx *Context, args []string) int {
 		}),
 	)
 	pb.RegisterHookployServer(grpcServer, grpcSrv)
+
+	// Both ports are bound here rather than inside the serve goroutines, so
+	// an address already in use is an exit code instead of a "main started"
+	// notification for a process that never served anything.
+	httpLis, err := net.Listen("tcp", cfg.Listen.HTTP)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "http listen: %v\n", err)
+		return 1
+	}
 	grpcLis, err := net.Listen("tcp", cfg.Listen.GRPC)
 	if err != nil {
+		_ = httpLis.Close()
 		fmt.Fprintf(ctx.Stderr, "grpc listen: %v\n", err)
 		return 1
 	}
+	notifier.MainStarted(version.Version)
+	watcher.Start()
 
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Printf("hookploy main listening on http://%s grpc://%s (db: %s)", cfg.Listen.HTTP, cfg.Listen.GRPC, cfg.DB)
-		errCh <- httpServer.ListenAndServe()
+		errCh <- httpServer.Serve(httpLis)
 	}()
 	go func() {
 		if err := grpcServer.Serve(grpcLis); err != nil {
@@ -165,11 +201,18 @@ func cmdMain(ctx *Context, args []string) int {
 				continue
 			}
 			logger.Printf("received %s, shutting down", sig)
+			// The watcher goes first: closing the listeners drops every edge
+			// at once, and a poll landing in that window would report the
+			// fleet offline when it is main that is leaving.
+			watcher.Shutdown()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = httpServer.Shutdown(shutdownCtx)
 			cancel()
 			grpcServer.Stop()
 			sched.Shutdown()
+			// After the scheduler: shutting it down settles the rollouts it
+			// was holding, and those notifications are worth the short wait.
+			notifier.Shutdown()
 			logger.Printf("bye")
 			return 0
 		}

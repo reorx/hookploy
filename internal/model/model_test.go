@@ -2,6 +2,7 @@ package model
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,6 +90,64 @@ func TestAllTerminal(t *testing.T) {
 	for _, c := range cases {
 		if got := AllTerminal(c.in); got != c.want {
 			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Behavior: the notify vocabulary is closed — config validates event names
+// against it, so an unknown name must never pass as valid, and the default
+// list must itself be part of the vocabulary or every install would reject
+// its own defaults.
+func TestEventKindVocabulary(t *testing.T) {
+	for _, k := range EventKinds() {
+		if !k.Valid() {
+			t.Errorf("%q is in EventKinds but reports invalid", k)
+		}
+	}
+	for _, bad := range []EventKind{"", "deploy.faild", "deploy", "deploy.failed "} {
+		if bad.Valid() {
+			t.Errorf("%q reports valid but is not in the vocabulary", bad)
+		}
+	}
+	def := DefaultEventKinds()
+	want := []EventKind{EventDeployFailed, EventMainStarted, EventEdgeOffline, EventEdgeOnline}
+	if len(def) != len(want) {
+		t.Fatalf("default event kinds = %v, want %v", def, want)
+	}
+	for i, k := range def {
+		if k != want[i] {
+			t.Errorf("default event kinds = %v, want %v", def, want)
+			break
+		}
+	}
+	for _, k := range def {
+		if !k.Valid() {
+			t.Errorf("default event %q is not in the vocabulary", k)
+		}
+	}
+}
+
+// Behavior: every kind in the vocabulary has a scope, and the two halves are
+// exactly the deploy.* kinds and the node ones. notify.Event's payload
+// discriminator and config's per-service validation both read this, so a new
+// kind that forgot to declare its scope would silently be filed as a deploy.
+func TestEventKindScopeSplitsDeployFromNode(t *testing.T) {
+	wantNode := map[EventKind]bool{
+		EventMainStarted: true, EventEdgeOffline: true, EventEdgeOnline: true,
+	}
+	for _, k := range EventKinds() {
+		got := k.Scope()
+		if wantNode[k] {
+			if got != ScopeNode {
+				t.Errorf("%q scope = %q, want node", k, got)
+			}
+			continue
+		}
+		if got != ScopeDeploy {
+			t.Errorf("%q scope = %q, want deploy", k, got)
+		}
+		if !strings.HasPrefix(string(k), "deploy.") {
+			t.Errorf("%q is deploy-scoped but is not named deploy.*", k)
 		}
 	}
 }

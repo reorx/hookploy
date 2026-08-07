@@ -78,6 +78,12 @@ func (s *Server) enqueue(w http.ResponseWriter, svc *config.Service, kind model.
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// This deploy settles here and never touches the scheduler, so this
+		// is the only place that can report it — and a pipeline that cannot
+		// even be built is exactly the failure worth hearing about.
+		if s.Notify != nil {
+			s.Notify(d.ID)
+		}
 		writeJSON(w, http.StatusAccepted, api.Accepted{DeployID: d.ID, StatusURL: "/deploys/" + d.ID})
 		return
 	}

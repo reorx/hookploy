@@ -58,6 +58,7 @@ services:
 type harness struct {
 	t          *testing.T
 	ts         *httptest.Server
+	srv        *Server
 	store      *store.Store
 	fake       *runner.FakeRunner
 	cfgPath    string
@@ -111,7 +112,7 @@ func newHarness(t *testing.T) *harness {
 	adminToken := token.New(token.KindAdmin)
 	st.InsertToken(string(token.KindAdmin), "admin", token.Hash(adminToken))
 
-	return &harness{t: t, ts: ts, store: st, fake: fake, cfgPath: cfgPath, svcToken: svcToken, adminToken: adminToken}
+	return &harness{t: t, ts: ts, srv: srv, store: st, fake: fake, cfgPath: cfgPath, svcToken: svcToken, adminToken: adminToken}
 }
 
 func (h *harness) hook(service, tok, body string, headers ...string) *http.Response {

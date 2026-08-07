@@ -16,6 +16,7 @@ type rawFile struct {
 	DB       string                 `yaml:"db"`
 	WebUI    *bool                  `yaml:"webui"`
 	Github   rawGithub              `yaml:"github"`
+	Notify   rawNotify              `yaml:"notify"`
 	Servers  map[string]rawServer   `yaml:"servers"`
 	Defaults rawDefaults            `yaml:"defaults"`
 	Services map[string]*rawService `yaml:"services"`
@@ -23,6 +24,31 @@ type rawFile struct {
 
 type rawGithub struct {
 	WebhookSecret string `yaml:"webhook_secret"`
+}
+
+type rawNotify struct {
+	Provider string    `yaml:"provider"`
+	BaseURL  string    `yaml:"base_url"`
+	Events   *[]string `yaml:"events"` // nil = unset (defaults apply)
+	// EdgeOfflineAfter is how long an edge may stay away before edge.offline
+	// fires. Zero means unset, the same convention defaults.timeout uses; an
+	// explicit 0s would otherwise alert on every server the moment main starts.
+	EdgeOfflineAfter model.Duration `yaml:"edge_offline_after"`
+	Telegram         rawTelegram    `yaml:"telegram"`
+	// A center block is deliberately absent: the notification-center API is
+	// not designed yet, so `provider: center` is rejected at load time rather
+	// than accepting a config shape that would have to be migrated later.
+}
+
+type rawTelegram struct {
+	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
+}
+
+// rawServiceNotify is a service's override of the global notify block.
+type rawServiceNotify struct {
+	Enabled *bool     `yaml:"enabled"` // nil = unset (true)
+	Events  *[]string `yaml:"events"`  // nil = inherit; set replaces (not merges)
 }
 
 type rawServer struct {
@@ -39,6 +65,7 @@ type rawService struct {
 	Image      string                 `yaml:"image"`
 	Webhook    *bool                  `yaml:"webhook"`
 	GithubRepo string                 `yaml:"github_repo"`
+	Notify     *rawServiceNotify      `yaml:"notify"` // nil = inherit everything
 	Timeout    model.Duration         `yaml:"timeout"`
 	Deploy     []yaml.Node            `yaml:"deploy"`
 	Tasks      map[string][]yaml.Node `yaml:"tasks"`
@@ -60,6 +87,7 @@ func (rs *rawService) UnmarshalYAML(node *yaml.Node) error {
 		Image      string                 `yaml:"image"`
 		Webhook    *bool                  `yaml:"webhook"`
 		GithubRepo string                 `yaml:"github_repo"`
+		Notify     yaml.Node              `yaml:"notify"`
 		Timeout    model.Duration         `yaml:"timeout"`
 		Deploy     []yaml.Node            `yaml:"deploy"`
 		Tasks      map[string][]yaml.Node `yaml:"tasks"`
@@ -73,6 +101,16 @@ func (rs *rawService) UnmarshalYAML(node *yaml.Node) error {
 	rs.Server, rs.Dir, rs.Image, rs.Webhook, rs.Timeout = p.Server, p.Dir, p.Image, p.Webhook, p.Timeout
 	rs.GithubRepo = p.GithubRepo
 	rs.Deploy, rs.Tasks = p.Deploy, p.Tasks
+
+	// notify: captured as a node so its own keys get the same strict check —
+	// decoding it as part of plain would only validate the outer key.
+	if p.Notify.Kind != 0 {
+		var sn rawServiceNotify
+		if err := decodeStrictNode(&p.Notify, &sn); err != nil {
+			return fmt.Errorf("notify: %w", err)
+		}
+		rs.Notify = &sn
+	}
 
 	if p.Instances.Kind != 0 {
 		if p.Instances.Kind != yaml.MappingNode {

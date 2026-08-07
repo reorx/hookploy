@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -128,12 +129,12 @@ func TestRecomputeDeployStatus(t *testing.T) {
 	d, ex := mkDeploy(t, s, "svc")
 	s.TransitionExecution(ex.ID, model.StatusQueued, model.StatusDispatching, "")
 	s.TransitionExecution(ex.ID, model.StatusDispatching, model.StatusRunning, "")
-	st, err := s.RecomputeDeployStatus(d.ID)
+	st, _, err := s.RecomputeDeployStatus(d.ID)
 	if err != nil || st != model.StatusRunning {
 		t.Fatalf("aggregate = %s err=%v", st, err)
 	}
 	s.TransitionExecution(ex.ID, model.StatusRunning, model.StatusSucceeded, "")
-	st, _ = s.RecomputeDeployStatus(d.ID)
+	st, _, _ = s.RecomputeDeployStatus(d.ID)
 	if st != model.StatusSucceeded {
 		t.Fatalf("aggregate = %s", st)
 	}
@@ -176,7 +177,7 @@ func TestRecomputeFailureIsLiveButNotFinishedEarly(t *testing.T) {
 	s.TransitionExecution(w1.ID, model.StatusRunning, model.StatusFailed, "boom")
 
 	// wave 2 is still queued: failure is visible, the rollout is not over.
-	st, err := s.RecomputeDeployStatus(d.ID)
+	st, _, err := s.RecomputeDeployStatus(d.ID)
 	if err != nil || st != model.StatusFailed {
 		t.Fatalf("failure should be visible right away: %s err=%v", st, err)
 	}
@@ -197,7 +198,7 @@ func TestRecomputeFailureIsLiveButNotFinishedEarly(t *testing.T) {
 
 	// wave 2 canceled → now the rollout is over.
 	s.TransitionExecution(w2.ID, model.StatusQueued, model.StatusCanceled, "earlier wave failed")
-	if st, _ = s.RecomputeDeployStatus(d.ID); st != model.StatusFailed {
+	if st, _, _ = s.RecomputeDeployStatus(d.ID); st != model.StatusFailed {
 		t.Fatalf("settled rollout = %s, want failed", st)
 	}
 	if got, _ = s.GetDeploy(d.ID); got.FinishedAt == nil {
@@ -260,7 +261,7 @@ func TestRecoverInFlightCancelsGatedWaves(t *testing.T) {
 	if got2.FinishedAt == nil {
 		t.Fatal("canceled execution should have finished_at")
 	}
-	st, err := s.RecomputeDeployStatus(d.ID)
+	st, _, err := s.RecomputeDeployStatus(d.ID)
 	if err != nil || st != model.StatusFailed {
 		t.Fatalf("recovered deploy must reach a terminal status: %s err=%v", st, err)
 	}
@@ -319,7 +320,7 @@ func TestRecoverSweepsInterruptedRolloutsWithNoInFlightExecutions(t *testing.T) 
 		if got.Status != model.StatusCanceled {
 			t.Fatalf("gated wave should be canceled, got %s", got.Status)
 		}
-		st, _ := s.RecomputeDeployStatus(d.ID)
+		st, _, _ := s.RecomputeDeployStatus(d.ID)
 		if st != model.StatusFailed {
 			t.Fatalf("deploy status = %s, want failed", st)
 		}
@@ -456,7 +457,7 @@ func TestFollowDeployStreamsUntilAllInstancesSettle(t *testing.T) {
 	}
 	// m0 dies; sg0 keeps running. The deploy already reads failed.
 	s.TransitionExecution(m0.ID, model.StatusRunning, model.StatusFailed, "boom")
-	if st, _ := s.RecomputeDeployStatus(d.ID); st != model.StatusFailed {
+	if st, _, _ := s.RecomputeDeployStatus(d.ID); st != model.StatusFailed {
 		t.Fatalf("deploy should read failed already, got %s", st)
 	}
 
@@ -746,5 +747,85 @@ func TestWorkflowRunCleanup(t *testing.T) {
 	}
 	if len(other) != 1 {
 		t.Fatalf("cleanup touched another repo: %+v", other)
+	}
+}
+
+// Behavior: exactly one recompute call reports the rollout as settled, no
+// matter how many run after it. The scheduler recomputes a deploy several
+// times over — after every execution transition and again at each wave
+// boundary — so a once-per-deploy side effect keyed off the aggregate status
+// alone would fire repeatedly.
+func TestRecomputeDeployStatusSettlesExactlyOnce(t *testing.T) {
+	s := openTest(t)
+	d, execs := mkRollout(t, s, "web", model.StatusQueued, model.StatusQueued, model.StatusQueued)
+
+	// Half-settled: no call may claim the rollout is over yet.
+	if _, err := s.TransitionExecution(execs[0].ID, model.StatusQueued, model.StatusFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, settled, err := s.RecomputeDeployStatus(d.ID); err != nil || settled {
+			t.Fatalf("call %d on a half-settled deploy: settled=%v err=%v", i, settled, err)
+		}
+	}
+
+	if _, err := s.TransitionExecution(execs[1].ID, model.StatusQueued, model.StatusCanceled, "gated"); err != nil {
+		t.Fatal(err)
+	}
+	settledCount := 0
+	for i := 0; i < 5; i++ {
+		st, settled, err := s.RecomputeDeployStatus(d.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st != model.StatusFailed {
+			t.Fatalf("aggregate = %q, want failed on every call", st)
+		}
+		if settled {
+			settledCount++
+		}
+	}
+	if settledCount != 1 {
+		t.Fatalf("settled reported %d times, want exactly 1", settledCount)
+	}
+}
+
+// Behavior: concurrent recomputes of the same deploy — what a parallel wave
+// produces when its instances finish together — still settle exactly once.
+func TestRecomputeDeployStatusSettlesOnceUnderConcurrency(t *testing.T) {
+	s := openTest(t)
+	d, execs := mkRollout(t, s, "web", model.StatusQueued, model.StatusQueued)
+	if _, err := s.TransitionExecution(execs[0].ID, model.StatusQueued, model.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	const racers = 8
+	var wg sync.WaitGroup
+	results := make([]bool, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, settled, err := s.RecomputeDeployStatus(d.ID)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			results[i] = settled
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	won := 0
+	for _, settled := range results {
+		if settled {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d of %d concurrent recomputes claimed the settle, want exactly 1", won, racers)
 	}
 }

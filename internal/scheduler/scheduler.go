@@ -31,6 +31,14 @@ type Scheduler struct {
 	store *store.Store
 	reg   *executor.Registry
 
+	// Notify fires once for each deploy that settles through normal
+	// scheduling. Recover deliberately does not use it: a restart closing out
+	// rollouts the previous process abandoned is bookkeeping, not a fresh
+	// incident, and Recover runs before the listeners are even up. nil is
+	// valid and means notifications are not wired. The bare signature keeps
+	// this package free of any dependency on internal/notify.
+	Notify func(deployID string)
+
 	mu       sync.Mutex
 	services map[string]*svcState
 
@@ -162,10 +170,23 @@ func (s *Scheduler) runDeploy(deployID string) {
 					"first instance of this wave failed")
 			}
 		}
-		_, _ = s.store.RecomputeDeployStatus(deployID)
+		s.recompute(deployID)
 	}
-	_, _ = s.store.RecomputeDeployStatus(deployID)
+	s.recompute(deployID)
 	_ = s.store.CleanupService(d.Service, RetainPerService)
+}
+
+// recompute re-aggregates a deploy's status and hands it to Notify on the one
+// call that actually ends the rollout. Every normal-path recompute in this
+// file goes through here; the store's compare-and-set on finished_at is what
+// makes "the one call" exact, across both the per-execution transitions and
+// the wave-boundary sweeps that all recompute the same deploy.
+func (s *Scheduler) recompute(deployID string) {
+	_, settled, err := s.store.RecomputeDeployStatus(deployID)
+	if err != nil || !settled || s.Notify == nil {
+		return
+	}
+	s.Notify(deployID)
 }
 
 // transition moves an execution between states and immediately re-aggregates
@@ -173,7 +194,7 @@ func (s *Scheduler) runDeploy(deployID string) {
 func (s *Scheduler) transition(ex *model.Execution, from, to model.Status, errMsg string) (bool, error) {
 	ok, err := s.store.TransitionExecution(ex.ID, from, to, errMsg)
 	if ok && err == nil {
-		_, _ = s.store.RecomputeDeployStatus(ex.DeployID)
+		s.recompute(ex.DeployID)
 	}
 	return ok, err
 }
@@ -244,7 +265,11 @@ func (s *Scheduler) Recover() error {
 		return err
 	}
 	for _, id := range ids {
-		if _, err := s.store.RecomputeDeployStatus(id); err != nil {
+		// Deliberately not s.recompute: these deploys are being closed out
+		// because the previous process died holding them, which is not news
+		// worth paging anyone about — and a restart would send one message
+		// per abandoned rollout.
+		if _, _, err := s.store.RecomputeDeployStatus(id); err != nil {
 			return err
 		}
 	}

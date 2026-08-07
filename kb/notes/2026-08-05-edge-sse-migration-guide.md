@@ -13,7 +13,7 @@ tags:
 
 **读者**：deploy workspace 的运维 agent（`~/Library/Mobile Documents/com~apple~CloudDocs/deploy`）。本文只讲「怎么把线上两台 edge 切过去、怎么验证、出问题怎么退」，hookploy 本身的用法见 `kb/docs/deployment-guide.md`。
 
-> ✅ **前置条件已满足，可以执行。** 改动已合入 master 并随 **v0.4.0** 发布（2026-08-05）。线上三台当前仍是 **v0.3.2**，该版本**没有** `--transport` flag，所以升级仍是本文第一步。升级顺序不可颠倒（先 main 后 edge），见 §2「前置条件」。
+> ✅ **已执行完毕（2026-08-08）。** 生产三台随 **v0.5.0**（含 notify 功能）对齐，两台 edge 均已切到 SSE：升 main（ali）→ hh 切 sse → tc 切 sse，各步验证通过；SSE 通路真实部署（condenser `dp_19fdcf584`）succeeded、日志完整回传。断连基线 1372 次/24h（gRPC，2026-08-07 实测），切换后短窗为 0；§3.4 的 24h 观察窗口因用户要求一次到位而压缩，24h 级对照数据看 deploy workspace 后续记录。本文保留作回退（§5）与排障（§6）手册。
 
 ## 1. 为什么要做这件事
 

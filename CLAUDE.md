@@ -10,6 +10,8 @@ M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现�
 
 节点事件已实现（2026-08-07）：词汇表加 `main.started` / `edge.offline` / `edge.online`，并引入 `model.EventScope`（`ScopeDeploy` / `ScopeNode`）把"属于某服务的部署结果"与"属于整个部署的节点动静"分开——它同时是 `notify.Event` 载荷的判别式（`Deploy *DeployEvent` / `Node *NodeEvent`，恰好设一个）。四个默认事件：`deploy.failed` + 三个节点事件。服务级 `notify.events` 只收 deploy.*，写节点事件加载失败，从全局继承来的节点事件静默过滤。新增 `internal/edgewatch`（周期巡检，见代码地图），`notify.Hub` 加三个窄入口方法。`internal/api` / `--json` / Web UI 契约仍未动。
 
+**v0.5.0 已发布并上生产（2026-08-08）**：生产三台对齐 v0.5.0，两台 edge 全部切到 SSE 通路（`kb/notes/2026-08-05-edge-sse-migration-guide.md` 已执行完毕），Telegram 通知启用（main.started 实测送达）。gRPC 通路进入实际弃用观察期。
+
 生产部署、服务迁移等运维事项不在本仓库跟踪（见用户全局 CLAUDE.md 的 DevOps 约定，统一在 deploy 目录管理）。
 
 ## 常用命令

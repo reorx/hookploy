@@ -400,6 +400,15 @@ func normalizeService(name string, rs *rawService, cfg *Config) (*Service, error
 			if err != nil {
 				return nil, fmt.Errorf("service %q task %q: %w", name, tname, err)
 			}
+			// A task already picks its target with --instance; a second way to
+			// address instances would only be a way to disagree with the first.
+			for _, s := range steps {
+				if len(s.On) > 0 {
+					return nil, fmt.Errorf(
+						"service %q task %q: line %d: %q does not apply to tasks (a task picks its target with --instance)",
+						name, tname, s.Line, ops.OnKey)
+				}
+			}
 			if err := validatePipeline(svc, steps); err != nil {
 				return nil, fmt.Errorf("service %q task %q: %w", name, tname, err)
 			}
@@ -411,27 +420,52 @@ func normalizeService(name string, rs *rawService, cfg *Config) (*Service, error
 
 // validatePipeline enforces cross-op rules: image.pin needs a service image
 // and a later compose.up (the built-in verification must have a target —
-// a "white pin" is statically impossible).
+// a "white pin" is statically impossible), and `on:` must name instances of
+// this service without leaving any of them idle.
+//
+// The pin rule is checked per instance because `on:` makes the pipeline an
+// instance actually runs a subset of the one written down — a compose.up
+// targeted away from an instance cannot verify that instance's pin.
 func validatePipeline(svc *Service, steps []ops.Step) error {
-	pinIdx := -1
-	for i, s := range steps {
-		if s.Op == "image.pin" {
-			if svc.Image == "" {
-				return fmt.Errorf("line %d: image.pin requires the service to declare \"image\"", s.Line)
+	for _, s := range steps {
+		if s.Op == "image.pin" && svc.Image == "" {
+			return fmt.Errorf("line %d: image.pin requires the service to declare \"image\"", s.Line)
+		}
+		for _, target := range s.On {
+			if svc.Instance(target) == nil {
+				return fmt.Errorf("line %d: %q references unknown instance %q", s.Line, ops.OnKey, target)
 			}
-			pinIdx = i
 		}
 	}
-	if pinIdx >= 0 {
-		hasUpAfter := false
-		for _, s := range steps[pinIdx+1:] {
-			if s.Op == "compose.up" {
-				hasUpAfter = true
-			}
+	for _, inst := range svc.Instances {
+		mine := ops.StepsFor(steps, inst.Name)
+		// An instance every step is targeted away from would deploy nothing
+		// at all: always a typo, never something worth expressing this way.
+		if len(steps) > 0 && len(mine) == 0 {
+			return fmt.Errorf("every step is restricted by %q, leaving instance %q with nothing to run", ops.OnKey, inst.Name)
 		}
-		if !hasUpAfter {
-			return fmt.Errorf("line %d: image.pin requires a compose.up later in the pipeline (its verification runs after the last compose.up)", steps[pinIdx].Line)
+		if err := validatePin(mine); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// validatePin checks that an image.pin has a compose.up after it to verify.
+func validatePin(steps []ops.Step) error {
+	pinIdx := -1
+	for i, s := range steps {
+		if s.Op == "image.pin" {
+			pinIdx = i
+		}
+	}
+	if pinIdx < 0 {
+		return nil
+	}
+	for _, s := range steps[pinIdx+1:] {
+		if s.Op == "compose.up" {
+			return nil
+		}
+	}
+	return fmt.Errorf("line %d: image.pin requires a compose.up later in the pipeline (its verification runs after the last compose.up)", steps[pinIdx].Line)
 }

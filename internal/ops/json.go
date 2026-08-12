@@ -43,6 +43,8 @@ func (s *Step) UnmarshalJSON(b []byte) error {
 	if d, ok := args.(defaulter); ok {
 		d.setDefaults()
 	}
-	s.Op, s.Args, s.Line = raw.Op, args, 0
+	// On is config-only and never on the wire: a decoded step is one the
+	// scheduler already resolved targeting for, so it runs where it landed.
+	s.Op, s.Args, s.On, s.Line = raw.Op, args, nil, 0
 	return nil
 }

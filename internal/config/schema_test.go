@@ -133,6 +133,24 @@ services:
       db-push:
         - compose.exec: { service: web, argv: [pnpm, "db:push"] }
 `,
+		"steps targeted with on": minimalServers + `
+services:
+  app:
+    dir: /opt/a
+    image: ghcr.io/x/a
+    deploy:
+      - image.pin
+      - compose.run: { service: web, argv: [alembic, upgrade, head] }
+        on: [main]
+      - image.extract: { from: /app/static, to: static }
+        on: main
+      - compose.up:
+        on: [main, edge]
+      - compose.up
+    instances:
+      main: { server: s1 }
+      edge: { server: s2 }
+`,
 		"servers only, no services": minimalServers,
 		"notify, global and per-service": minimalServers + `
 notify:
@@ -221,6 +239,34 @@ services:
       - compose.up: {}
         compose.pull: {}
 `, "maxProperties: got 2, want 1"},
+		{"step map with two ops next to on", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.up: {}
+        compose.pull: {}
+        on: [x]
+`, "maxProperties: got 3, want 2"},
+		{"on is a map", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.up: {}
+        on: { x: 1 }
+`, "on/oneOf"},
+		{"on names a non-string", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.up: {}
+        on: [1]
+`, "on/oneOf"},
 		{"step is a sequence", minimalServers + `
 services:
   a: { server: s1, dir: /a, deploy: [[compose.up]] }
@@ -369,26 +415,36 @@ func TestSchemaOpCoverage(t *testing.T) {
 		t.Fatalf("unmarshal generated schema: %v", err)
 	}
 	var enum []string
-	var props map[string]any
+	var props, targeted map[string]any
 	for _, branch := range doc.Definitions.Step.OneOf {
 		if len(branch.Enum) > 0 {
 			enum = branch.Enum
+		}
+		if _, ok := branch.Properties[ops.OnKey]; ok {
+			targeted = branch.Properties
+			continue
 		}
 		if len(branch.Properties) > 0 {
 			props = branch.Properties
 		}
 	}
-	if props == nil || enum == nil {
-		t.Fatalf("step definition missing its string/map branches:\n%s", raw)
+	if props == nil || targeted == nil || enum == nil {
+		t.Fatalf("step definition missing its string/map/on branches:\n%s", raw)
 	}
 
 	for _, info := range ops.Catalog() {
 		if _, ok := props[info.Name]; !ok {
 			t.Errorf("op %q missing from the step map branch", info.Name)
 		}
+		if _, ok := targeted[info.Name]; !ok {
+			t.Errorf("op %q missing from the on branch — every op can be targeted", info.Name)
+		}
 	}
 	if len(props) != len(ops.Catalog()) {
 		t.Errorf("step map branch has %d ops, catalog has %d", len(props), len(ops.Catalog()))
+	}
+	if len(targeted) != len(ops.Catalog())+1 {
+		t.Errorf("on branch has %d keys, want the catalog (%d) plus %q", len(targeted), len(ops.Catalog()), ops.OnKey)
 	}
 
 	var wantEnum []string

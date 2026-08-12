@@ -59,6 +59,24 @@ services:
       - main
       - edge
 
+  # op 级 instance 定向（on:）验证：定向步骤只出现在 wave 1 的 main 快照里，
+  # edge 的快照根本没有这一步；把 argv 换成 [false] 即验证失败语义
+  # （wave 1 failed → wave 2 skipped，两边容器都不动）
+  echo_on:
+    dir: /opt/apps/echo_server
+    deploy:
+      - compose.pull
+      - run: { argv: [echo, migrated] }
+        on: [main]
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+    instances:
+      main: { server: ali-hk-01 }
+      edge: { server: edge-01 }
+    rollout:
+      - main
+      - edge
+
   # SSE 流断容忍验证：拉长执行窗口，好在执行中途掐掉 SSE 流
   # （ss -K dst 127.0.0.1:9180），观察 edge 重连补报、部署仍记 succeeded
   echo_slow_edge:

@@ -27,7 +27,9 @@ func Interpolate(steps []Step, payload map[string]any) ([]Step, error) {
 		if err := out[i].UnmarshalJSON(b); err != nil {
 			return nil, err
 		}
-		out[i].Line = s.Line
+		// Line and On do not travel through the snapshot format; carry them
+		// over by hand. On is never mutated, so sharing the slice is safe.
+		out[i].On, out[i].Line = s.On, s.Line
 		if err := interpolateValue(reflect.ValueOf(out[i].Args).Elem(), payload); err != nil {
 			return nil, fmt.Errorf("op %s: %w", s.Op, err)
 		}

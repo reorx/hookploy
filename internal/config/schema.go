@@ -297,19 +297,34 @@ func serviceSchema() *jsonSchema {
 	}
 }
 
-// stepSchema builds the two step forms from the op catalog: a bare string
-// (ops whose zero-value Args validate) and a single-key map (op name → args).
+// stepSchema builds the three step forms from the op catalog: a bare string
+// (ops whose zero-value Args validate), a single-key map (op name → args),
+// and that map plus the reserved `on:` key restricting the op to some
+// instances. The `on` form is a branch of its own rather than a second
+// optional key of the map form, so "exactly one op name" stays expressible.
 func stepSchema() *jsonSchema {
 	var zeroArgOps []any
 	argMaps := map[string]*jsonSchema{}
 	for _, info := range ops.Catalog() {
+		args := opArgsSchema(info)
 		if info.Defaults.Validate() == nil {
 			zeroArgOps = append(zeroArgOps, info.Name)
+			// `- image.pin:` with an empty body is how a no-arg op carries an
+			// `on:`, so its args node has to accept null as well.
+			args = &jsonSchema{
+				Description: info.Doc,
+				OneOf:       []*jsonSchema{args, {Type: "null", Description: "无参形式（配 on: 时用）。"}},
+			}
 		}
-		argMaps[info.Name] = opArgsSchema(info)
+		argMaps[info.Name] = args
+	}
+
+	targeted := map[string]*jsonSchema{ops.OnKey: onSchema()}
+	for name, args := range argMaps {
+		targeted[name] = args
 	}
 	return &jsonSchema{
-		Description: "流水线的一步：字符串 = 无参 op，单键 map = op 名 → 参数。",
+		Description: "流水线的一步：字符串 = 无参 op，单键 map = op 名 → 参数，再加 on: 则限定执行的 instance。",
 		OneOf: []*jsonSchema{
 			{
 				Type:        "string",
@@ -323,6 +338,32 @@ func stepSchema() *jsonSchema {
 				AdditionalProperties: false,
 				MinProperties:        intp(1),
 				MaxProperties:        intp(1),
+			},
+			{
+				Type:                 "object",
+				Description:          "定向形式：一个 op 名加上 on。",
+				Properties:           targeted,
+				Required:             []string{ops.OnKey},
+				AdditionalProperties: false,
+				MinProperties:        intp(2),
+				MaxProperties:        intp(2),
+			},
+		},
+	}
+}
+
+// onSchema describes the `on:` modifier: instance names, one or many.
+func onSchema() *jsonSchema {
+	return &jsonSchema{
+		Description: "限定这一步只在列出的 instance 上执行（instance 名，不是 server 名）；" +
+			"省略则每个 instance 都执行。仅 deploy 流水线可用——tasks 用 --instance 选目标。",
+		OneOf: []*jsonSchema{
+			{Type: "string", Description: "单个 instance 名。"},
+			{
+				Type:        "array",
+				Description: "多个 instance 名。",
+				Items:       &jsonSchema{Type: "string"},
+				MinItems:    intp(1),
 			},
 		},
 	}

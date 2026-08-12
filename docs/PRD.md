@@ -115,6 +115,8 @@ services:
     dir: /opt/apps/vocalflow-rt          # 实例默认 dir，可被实例覆盖
     deploy:                              # 所有实例共用同一条流水线
       - image.pin
+      - compose.run: { service: api, argv: [alembic, upgrade, head] }
+        on: [main]                       # 定向：migration 只在 main node 跑一次
       - compose.up
       - healthcheck: { url: "http://127.0.0.1:3030/healthz" }
     instances:
@@ -178,7 +180,7 @@ services:
 
 ### Op 词汇表（v1）
 
-步骤语法：字符串 = 无参 op（`- compose.pull`），单键 map = 带参 op（`- compose.up: { force_recreate: true }`）。
+步骤语法：字符串 = 无参 op（`- compose.pull`），单键 map = 带参 op（`- compose.up: { force_recreate: true }`），再加保留键 `on:` = 限定执行的实例（见下「步骤定向」）。
 
 | op | 语义 | 参数 |
 |---|---|---|
@@ -196,6 +198,25 @@ services:
 | `run` | 在服务目录下执行一条命令（argv 数组，不经 shell） | `argv: []` |
 
 `run` 是逃生舱：用于 op 词汇表未覆盖的场景（如迁移期兼容现有 deploy.sh）。它依然是**配置定义**的（在 SSOT 里、经 git 审计），不破坏"payload 不能注入命令"的安全属性；但新服务应优先用类型化 op。
+
+### 步骤定向（`on:`）
+
+同一条 `deploy` 流水线在每个实例上各跑一遍，但有些步骤只该跑一次——典型是数据库 migration（多节点并行跑同一份 migration 是竞态，且要求每台都能连 DB）。在 step 上加保留键 `on:` 即把它限定到指定实例：
+
+```yaml
+deploy:
+  - image.pin
+  - compose.run: { service: api, argv: [alembic, upgrade, head] }
+    on: [main]          # 只在 main 这个 instance 上执行
+  - compose.up
+```
+
+- `on:` 里写 **instance 名**，不是 server 名——instance 才是配置的寻址单位（`rollout` 用的也是它，`dir` 也是 per-instance），且天然唯一。值可以是单个名（`on: main`）或名字列表。
+- 无参 op 要带 `on:` 时写成空值 map：`- image.pin:` 换行 `  on: [main]`。
+- 校验在加载期（`hookploy validate` / reload）完成：名字必须是本服务声明过的实例；过滤后不允许任何实例的流水线为空。`tasks:` 不接受 `on:`——任务本就用 `--instance` 选目标，两套定向叠加只会互相矛盾。
+- 过滤发生在**入队时**：每个 execution 的 ops 快照只含它真正要跑的步骤，因此下游（edge、日志、历史、Web UI）看到的都是准确的流水线，而不是"这一步被跳过了"。
+
+失败语义直接落在既有的波次门控上：把 migration 定向到第一波的中心节点，它失败则整次部署 failed、后续波次一台不动（旧版本继续跑）。配套纪律是 expand-contract——迁移必须兼容"旧代码 + 新库"这一中间态，因为波 1 完成后波 2 的旧容器仍在跑。
 
 ### 模式 op 语义
 

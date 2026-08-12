@@ -29,6 +29,8 @@ services:
     dir: /opt/apps/vocalflow-rt
     deploy:
       - image.pin
+      - compose.run: { service: api, argv: [alembic, upgrade, head] }
+        on: [main]                     # migration 只在 main node 跑一次
       - compose.up
       - healthcheck: { url: "http://127.0.0.1:3030/healthz" }
     instances:

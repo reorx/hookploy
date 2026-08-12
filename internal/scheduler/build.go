@@ -32,9 +32,15 @@ func BuildDeploy(svc *config.Service, kind model.Kind, task, instance string, pa
 	if err != nil {
 		return nil, nil, err
 	}
-	opsJSON, err := json.Marshal(interpolated)
-	if err != nil {
-		return nil, nil, err
+	// One snapshot per instance, with `on:` already resolved: an execution
+	// carries the ops it will actually run, never a step it must skip.
+	snapshots := make(map[string]json.RawMessage, len(svc.Instances))
+	for _, inst := range svc.Instances {
+		b, err := json.Marshal(ops.StepsFor(interpolated, inst.Name))
+		if err != nil {
+			return nil, nil, err
+		}
+		snapshots[inst.Name] = b
 	}
 
 	digest := ""
@@ -70,7 +76,7 @@ func BuildDeploy(svc *config.Service, kind model.Kind, task, instance string, pa
 			Dir:       inst.Dir,
 			Image:     svc.Image,
 			Wave:      wave,
-			OpsJSON:   opsJSON,
+			OpsJSON:   snapshots[inst.Name],
 			Timeout:   model.Duration(svc.Timeout),
 			Status:    model.StatusQueued,
 			CreatedAt: time.Now(),

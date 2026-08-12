@@ -294,6 +294,92 @@ services:
 	}
 }
 
+// Behavior: a deploy step may name the instances it runs on; the loader
+// keeps the targeting on the step and leaves untargeted steps alone.
+func TestStepOnLoads(t *testing.T) {
+	cfg, err := load(t, minimalServers+`
+services:
+  a:
+    dir: /a
+    deploy:
+      - compose.run: { service: web, argv: [migrate] }
+        on: main
+      - compose.up
+    instances:
+      main: { server: s1 }
+      edge: { server: s2 }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := cfg.Services["a"].Deploy
+	if got := steps[0].On; len(got) != 1 || got[0] != "main" {
+		t.Fatalf("targeting lost: %v", got)
+	}
+	if steps[1].On != nil {
+		t.Fatalf("untargeted step gained targeting: %v", steps[1].On)
+	}
+}
+
+// Behavior: `on:` is checked at load time, not at deploy time — a name that
+// is not an instance, targeting that leaves an instance with nothing to do,
+// and `on:` inside a task are all load failures, pointing at the yaml line.
+func TestStepOnValidation(t *testing.T) {
+	cases := []struct {
+		name, yaml, wantSub, wantLine string
+	}{
+		{"unknown instance name", minimalServers + `
+services:
+  a:
+    dir: /a
+    deploy:
+      - compose.up
+      - run: { argv: [migrate] }
+        on: [mian]
+    instances:
+      main: { server: s1 }
+`, "mian", "line 11"},
+		{"instance left with an empty pipeline", minimalServers + `
+services:
+  a:
+    dir: /a
+    deploy:
+      - run: { argv: [migrate] }
+        on: [main]
+    instances:
+      main: { server: s1 }
+      edge: { server: s2 }
+`, "edge", ""},
+		{"on inside a task", minimalServers + `
+services:
+  a:
+    dir: /a
+    deploy: [compose.up]
+    tasks:
+      migrate:
+        - run: { argv: [migrate] }
+          on: [main]
+    instances:
+      main: { server: s1 }
+      edge: { server: s2 }
+`, "--instance", "line 12"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := load(t, c.yaml)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), c.wantSub) {
+				t.Fatalf("error %q does not mention %q", err, c.wantSub)
+			}
+			if c.wantLine != "" && !strings.Contains(err.Error(), c.wantLine) {
+				t.Fatalf("error %q does not carry %s", err, c.wantLine)
+			}
+		})
+	}
+}
+
 // Behavior: image.pin inside a task also requires a later compose.up.
 func TestPinInTaskValidated(t *testing.T) {
 	_, err := load(t, minimalServers+`

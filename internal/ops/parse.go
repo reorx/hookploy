@@ -8,10 +8,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ParseStep parses one pipeline entry. Two forms:
+// OnKey is the reserved step key that restricts an op to some instances.
+// It is not an op name, so it can never collide with the vocabulary.
+const OnKey = "on"
+
+// ParseStep parses one pipeline entry. Three forms:
 //
 //   - compose.pull                      (string = zero-arg op)
 //   - compose.up: { services: [web] }   (single-key map = op with args)
+//   - compose.run: { ... }              (op name + `on:` = op restricted to
+//     on: [main]                         the named instances)
 func ParseStep(node *yaml.Node) (Step, error) {
 	if node.Kind == yaml.AliasNode {
 		node = node.Alias
@@ -20,13 +26,81 @@ func ParseStep(node *yaml.Node) (Step, error) {
 	case yaml.ScalarNode:
 		return newStep(node.Value, node, nil)
 	case yaml.MappingNode:
-		if len(node.Content) != 2 {
-			return Step{}, fmt.Errorf("line %d: op step must be a single-key map", node.Line)
-		}
-		return newStep(node.Content[0].Value, node.Content[0], node.Content[1])
+		return parseMapStep(node)
 	default:
-		return Step{}, fmt.Errorf("line %d: op step must be a string or a single-key map", node.Line)
+		return Step{}, fmt.Errorf("line %d: op step must be a string or a map", node.Line)
 	}
+}
+
+// parseMapStep handles the map forms: exactly one op name, plus an optional
+// `on:` in either key order.
+func parseMapStep(node *yaml.Node) (Step, error) {
+	var nameNode, argsNode, onNode *yaml.Node
+	for i := 0; i < len(node.Content); i += 2 {
+		key, val := node.Content[i], node.Content[i+1]
+		if key.Value == OnKey {
+			if onNode != nil {
+				return Step{}, fmt.Errorf("line %d: duplicate %q key", key.Line, OnKey)
+			}
+			onNode = val
+			continue
+		}
+		if nameNode != nil {
+			return Step{}, fmt.Errorf(
+				"line %d: an op step map takes one op name plus an optional %q, so %q has no place here",
+				key.Line, OnKey, key.Value)
+		}
+		nameNode, argsNode = key, val
+	}
+	if nameNode == nil {
+		return Step{}, fmt.Errorf("line %d: op step names no op", node.Line)
+	}
+	on, err := parseOn(onNode)
+	if err != nil {
+		return Step{}, err
+	}
+	step, err := newStep(nameNode.Value, nameNode, argsNode)
+	if err != nil {
+		return Step{}, err
+	}
+	step.On = on
+	return step, nil
+}
+
+// parseOn normalizes the `on:` value: one instance name or a list of them.
+func parseOn(node *yaml.Node) ([]string, error) {
+	if node == nil {
+		return nil, nil
+	}
+	if node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	empty := fmt.Errorf("line %d: %q must name at least one instance", node.Line, OnKey)
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if isNull(node) {
+			return nil, empty
+		}
+		return []string{node.Value}, nil
+	case yaml.SequenceNode:
+		var names []string
+		if err := node.Decode(&names); err != nil {
+			return nil, fmt.Errorf("line %d: %q: %w", node.Line, OnKey, err)
+		}
+		if len(names) == 0 {
+			return nil, empty
+		}
+		return names, nil
+	default:
+		return nil, fmt.Errorf("line %d: %q must be an instance name or a list of instance names", node.Line, OnKey)
+	}
+}
+
+// isNull reports whether a node is an explicit or implicit YAML null, which
+// is what `- image.pin:` leaves behind when the op takes no args but needs
+// an `on:` next to it.
+func isNull(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && node.Tag == "!!null"
 }
 
 func newStep(name string, nameNode, argsNode *yaml.Node) (Step, error) {
@@ -35,7 +109,7 @@ func newStep(name string, nameNode, argsNode *yaml.Node) (Step, error) {
 		return Step{}, fmt.Errorf("line %d: unknown op %q", nameNode.Line, name)
 	}
 	args := construct()
-	if argsNode != nil {
+	if argsNode != nil && !isNull(argsNode) {
 		if err := decodeStrict(argsNode, args); err != nil {
 			return Step{}, fmt.Errorf("op %s: %w", name, err)
 		}

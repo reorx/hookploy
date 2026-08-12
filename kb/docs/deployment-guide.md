@@ -318,6 +318,43 @@ chatsvc:
 - `rollout` 省略 = 按 `instances` 声明顺序逐实例串行。单机服务的 `server: xxx` 写法就是"单实例单波"的语法糖。
 - 目标 edge 离线时等 30s 重连窗口，窗口耗尽标记 `unreachable`（CI 可重跑）。
 
+### 4.6 步骤定向（`on:`）与多节点 migration
+
+同一条流水线在每个实例上各跑一遍，migration 这类步骤只该跑一次。在 step 上加保留键 `on:`，值是 **instance 名**（不是 server 名），单个名或列表：
+
+```yaml
+chatsvc:
+  image: ghcr.io/acme/chatsvc
+  dir: /opt/apps/chatsvc
+  deploy:
+    - image.pin
+    - compose.run: { service: api, argv: [alembic, upgrade, head] }
+      on: [main]                    # 只在 main 上执行；其余实例根本没有这一步
+    - compose.up
+    - healthcheck: { url: "http://127.0.0.1:8080/healthz" }
+  instances:
+    main:  { server: prod-01 }
+    api-1: { server: prod-02 }
+    api-2: { server: prod-03 }
+  rollout:
+    - main
+    - [api-1, api-2]
+```
+
+要点：
+
+- 无参 op 要带 `on:` 时写成空值 map：`- image.pin:` 换行 `  on: [main]`。
+- 名字必须是本服务声明过的实例，且不能把任何实例的流水线过滤成空——两者都在加载期报错（`hookploy validate` 先跑一遍再 reload）。
+- `tasks:` 不接受 `on:`：任务用 `hookploy task <svc> <name> --instance <inst>` 选目标。
+- 过滤在入队时完成，每个 execution 的 ops 快照只含它真正要跑的步骤，日志与部署详情里看到的就是各节点的真实流水线。
+
+**推荐的多节点 migration 模式**：
+
+1. migration 步骤定向到第一波的中心节点（上例 `main`），排在 `compose.up` **之前**——它失败则流水线停在启动新版本之前，部署 failed 并发通知，后续波次一台不动，全线仍跑旧版本。
+2. 迁移必须遵守 expand-contract：波 1 跑完后波 2 的旧容器还在跑，所以每次迁移都要兼容"旧代码 + 新库结构"这一中间态（加列先可空、删列分两次发布）。
+3. 应用侧关掉"启动时自动迁移"，改成启动时只检查（如 Django `migrate --check`、Alembic 比对 head）——迁移由流水线负责，应用只负责拒绝在错误的库结构上启动。
+4. 超长迁移（大表回填）不进部署流水线，走 `tasks:` 手动触发，避免把 deploy 超时拖满。
+
 ## 5. 日常运维
 
 CLI 远程使用（本地开发机和服务器行为一致）：
@@ -393,4 +430,8 @@ listen:
 
 ## 附：op 词汇表速查
 
-`image.pin`（digest 锁定+内置验证）、`image.extract`（从镜像抽文件近原子交换）、`artifact.extract`（下载+sha256 校验+解压交换）、`compose.pull` / `compose.up` / `compose.run` / `compose.exec` / `compose.restart`、`env.require` / `env.write`、`healthcheck`（轮询 HTTP 直到健康）、`run`（argv 逃生舱，不经 shell）。完整参数见 `docs/PRD.md` §4；机器可读的参数定义在 `hookploy schema` 输出里（op 词汇表演进时 schema 随之更新）。
+`image.pin`（digest 锁定+内置验证）、`image.extract`（从镜像抽文件近原子交换）、`artifact.extract`（下载+sha256 校验+解压交换）、`compose.pull` / `compose.up` / `compose.run` / `compose.exec` / `compose.restart`、`env.require` / `env.write`、`healthcheck`（轮询 HTTP 直到健康）、`run`（argv 逃生舱，不经 shell）。
+
+任一 step 都可加保留键 `on:`（instance 名，单个或列表）把它限定到部分实例，仅 `deploy` 可用，见 §4.6。
+
+完整参数见 `docs/PRD.md` §4；机器可读的参数定义在 `hookploy schema` 输出里（op 词汇表演进时 schema 随之更新）。

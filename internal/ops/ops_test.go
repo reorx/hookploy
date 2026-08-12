@@ -55,6 +55,94 @@ func TestParseStepForms(t *testing.T) {
 	}
 }
 
+// Behavior: a step map may carry the reserved `on:` key naming the instances
+// the op runs on — scalar or list, in either key order, and with the null
+// body form that lets a zero-arg op take one.
+func TestParseStepOn(t *testing.T) {
+	steps := parseSteps(t, `
+- compose.pull
+- compose.run: { service: web, argv: [alembic, upgrade, head] }
+  on: [main]
+- image.pin:
+  on: web-0
+- on: [a, b]
+  compose.up: { force_recreate: true }
+`)
+	if steps[0].On != nil {
+		t.Fatalf("an ordinary step carries no targeting: %v", steps[0].On)
+	}
+	if got := steps[1].On; len(got) != 1 || got[0] != "main" {
+		t.Fatalf("on list: %v", got)
+	}
+	if run := steps[1].Args.(*ComposeRun); run.Service != "web" {
+		t.Fatalf("args lost next to on: %+v", run)
+	}
+	if got := steps[2].On; len(got) != 1 || got[0] != "web-0" {
+		t.Fatalf("scalar on should normalize to a list: %v", got)
+	}
+	if _, ok := steps[2].Args.(*ImagePin); !ok {
+		t.Fatalf("a null body means zero args, got %T", steps[2].Args)
+	}
+	if got := steps[3].On; len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("on may come first: %v", got)
+	}
+	if !steps[3].Args.(*ComposeUp).ForceRecreate {
+		t.Fatal("args lost when on comes first")
+	}
+}
+
+// Behavior: a step without `on:` runs on every instance, one with `on:` only
+// on the named ones. This predicate is the single definition of targeting —
+// config validation and enqueue-time filtering both go through it.
+func TestStepRunsOn(t *testing.T) {
+	steps := parseSteps(t, `
+- compose.up
+- run: { argv: [migrate] }
+  on: [main]
+`)
+	if !steps[0].RunsOn("main") || !steps[0].RunsOn("api-sg0") {
+		t.Fatal("an untargeted step runs everywhere")
+	}
+	if !steps[1].RunsOn("main") || steps[1].RunsOn("api-sg0") {
+		t.Fatal("a targeted step runs on its instances only")
+	}
+}
+
+// Behavior: `on:` is a config-time modifier, not part of the op snapshot.
+// Enqueue resolves it, so the DB / edge wire format stays byte-identical.
+func TestStepOnStaysOutOfJSON(t *testing.T) {
+	steps := parseSteps(t, "- compose.up: { services: [web] }\n  on: [main]\n")
+	b, err := json.Marshal(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"op":"compose.up","args":{"services":["web"]}}]`
+	if string(b) != want {
+		t.Fatalf("wire format changed:\n got %s\nwant %s", b, want)
+	}
+	var back []Step
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back[0].On != nil {
+		t.Fatalf("On must not come back off the wire: %v", back[0].On)
+	}
+}
+
+// Behavior: interpolation deep-copies through the JSON snapshot, which by
+// design drops `on:` — targeting must survive it anyway, or every deploy
+// would enqueue unfiltered.
+func TestInterpolateKeepsOn(t *testing.T) {
+	steps := parseSteps(t, "- run: { argv: [echo, \"${payload.x}\"] }\n  on: [main]\n")
+	out, err := Interpolate(steps, map[string]any{"x": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[0].On; len(got) != 1 || got[0] != "main" {
+		t.Fatalf("interpolation dropped on: %v", got)
+	}
+}
+
 // Behavior: unknown ops and unknown params are rejected with the source line.
 func TestParseStepErrors(t *testing.T) {
 	cases := []struct {
@@ -70,7 +158,13 @@ func TestParseStepErrors(t *testing.T) {
 		{"- image.extract: { from: /a }", "to"},             // to required
 		{"- run: {}", "argv"},                               // argv required
 		{"- compose.up: [a, b]", "mapping"},                 // args must be a mapping
-		{"- compose.up: {x: 1}\n  extra: {}", "single-key"}, // two keys in one step
+		// the only key a step may carry besides the op name is `on`
+		{"- compose.up: {x: 1}\n  extra: {}", `"on"`},
+		{"- compose.up: {}\n  on: [a]\n  extra: {}", `"extra"`},
+		{"- on: [main]", "names no op"},
+		{"- compose.up: {}\n  on: {}", "instance name"}, // on is a name or a list of names
+		{"- compose.up: {}\n  on: []", "at least one"},
+		{"- compose.up: {}\n  on:", "at least one"},
 	}
 	for _, c := range cases {
 		_, err := parseStepsErr(c.src)

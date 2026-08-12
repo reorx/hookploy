@@ -23,7 +23,40 @@ type defaulter interface{ setDefaults() }
 type Step struct {
 	Op   string
 	Args Args
+	// On restricts the step to the named instances (empty = every instance).
+	// It is config-only: the scheduler resolves it when it builds the
+	// per-instance ops snapshot, so it never reaches the JSON wire format.
+	On   []string
 	Line int // source line in hookploy.yaml; 0 when restored from JSON
+}
+
+// RunsOn reports whether this step executes on the named instance. It is the
+// single definition of `on:` targeting — config validation and the enqueue
+// filter both go through it.
+func (s Step) RunsOn(instance string) bool {
+	if len(s.On) == 0 {
+		return true
+	}
+	for _, name := range s.On {
+		if name == instance {
+			return true
+		}
+	}
+	return false
+}
+
+// StepsFor returns, in order, the steps of a pipeline that run on one
+// instance. Resolving `on:` here is what keeps it out of everything
+// downstream: the snapshot an execution carries is already the exact list of
+// ops that instance will run.
+func StepsFor(steps []Step, instance string) []Step {
+	out := make([]Step, 0, len(steps))
+	for _, s := range steps {
+		if s.RunsOn(instance) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ImagePin locks the deploy to an image digest. Zero parameters; the

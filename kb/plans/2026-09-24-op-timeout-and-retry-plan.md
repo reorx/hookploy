@@ -10,7 +10,7 @@ tags:
 
 # hookploy：op 级超时 + 重试（拉取卡死不该吃光整条流水线的预算）
 
-**状态：待实施（诉求已定，未做代码调研）**。本文只把要解决的问题、期望的行为和边界写清楚；具体改哪些包、Step 结构怎么扩、executor 怎么杀子进程，留给实施时调研。
+**状态：待实施（诉求已定，2026-09-24 已对照代码 review 并拍板全部开放问题，见文末）**。本文把要解决的问题、期望的行为、边界和已定决议写清楚；具体改哪些包、Step 结构怎么扩，留给实施时展开。
 
 ## Context：2026-09-24 vocalflow-rt `dp_1a0d2a67f8ec5336195` 失败
 
@@ -41,7 +41,7 @@ tags:
       timeout: 3m
       retries: 2
     - compose.up
-    - healthcheck: { url: "http://127.0.0.1:3030/api/health", retries: 10 }
+    - healthcheck: { url: "http://127.0.0.1:3030/api/health", attempts: 10 }   # 原 retries，见决议 3
   ```
 
 - 无参 op 要带修饰符时同 `on:` 的空值 map 写法。
@@ -84,8 +84,23 @@ tags:
 5. 真机验证（ali-hk-01 测试环境，同 `2026-08-10-op-instance-targeting-plan.md` 的做法）：用 `ss -K` 或 tc/iptables 把一次真实 `image.pin` 的下载掐断/冻结，观察到 op timeout → 重试 → 成功。
 6. 发布：出带版本的 GitHub release，deploy 仓库按既有 SOP 升级三台（先 main 后 edge），然后给 vocalflow-rt 的 `image.pin` 加修饰符并用同 digest 手动 deploy 一次验证。
 
-## 待用户拍板的问题
+## Review 发现（2026-09-24，对照代码）
 
-1. `retries` 的边界：只对白名单 op（image.pin / compose.pull / artifact.extract）开放，还是任何 op 都能声明、由写配置的人自负其责？（倾向：白名单 + 明确报错，和 `on:` 禁用于 `tasks:` 的风格一致。）
-2. `healthcheck` 已有自己的 `retries` 参数（轮询语义）。新的 step 级 `retries`（重跑语义）与它同名会不会混淆？是否改名为 `attempts` 或 `retry:`？
-3. 第 5 节的停滞检测是否纳入本期。
+写诉求时未做代码调研，review 时核出五点与代码现实的出入，直接影响实施路线：
+
+1. **`image.pin` 已有内置 pull 重试**（`internal/engine/pin.go` 的循环：3 次、间隔 5s，参数在 `Engine.PullRetries/PullInterval` 上，但没有任何地方从配置接入，是硬编码默认）。事故里它一次都没生效，因为单次 `docker pull` 没有超时，第一次尝试就吃光了 10 分钟 ctx。**真正的缺口是"单次尝试的超时"**，不是"没有重试"；step 级 `retries` 若直接叠上去会形成两层嵌套重试。
+2. **新修饰符必须上线（wire），与 `on:` 不同**。`on:` 是配置期字段、`BuildDeploy` 入队时就消解掉；timeout/retries 由 edge 的 engine 执行，必然进 `ops` JSON 快照（DB、`edgewire.Exec.Ops`、gRPC）。`Step.UnmarshalJSON` 用普通 `json.Unmarshal`，**老版本 edge 会静默忽略新字段**——配置写了 3m 超时，实际仍按 10m 跑，正是事故里那种"静默放大"。
+3. **runner 已能干净地杀子进程**：`internal/runner/exec.go` 用 `Setpgid` + SIGTERM → 5s → SIGKILL 杀整个进程组。op 级 timeout 只需在 `runStep` 外套一层 `context.WithTimeout`，plan 里"executor 怎么杀子进程"不需要再调研。
+4. **`hookploy validate` 没有 warning 概念**，只有报错。"报错或至少警告"取报错。
+5. **停滞检测的信号比想象中粗**：runner 是流式输出，"连续 N 秒无输出"做成通用 `idle_timeout` 很便宜；但非 TTY 下 `docker pull` 只打每层状态行，一个大层正常慢速下载期间也是零输出，阈值不能设小，相对固定 timeout 收益有限。
+6. **`healthcheck.retries` 本身是误名**：代码是 `for attempt := 1; attempt <= a.Retries`，`retries: 5` 实际是总共轮询 5 次，日志也打 `attempt N/5`。它的正确名字就是 `attempts`。
+
+## 已拍板的决议（2026-09-24）
+
+1. **设计路线：通用 step 修饰符 `timeout` + `retries`，并收编 `image.pin` 的内置 pull 循环**。只保留一层重试语义，日志只有一种 attempt 计数。`Engine.PullRetries/PullInterval` 随之退役（或改为由修饰符驱动）；重试间隔沿用现有 5s 固定值，不做 backoff。
+2. **`retries` 只对白名单 op 开放**（`image.pin` / `compose.pull` / `artifact.extract`；`healthcheck` 自带轮询、不进白名单），其他 op 声明即 `validate` 报错，与 `on:` 禁用于 `tasks:` 的严格风格一致。`timeout` 对所有 op 开放（只是取消，无副作用问题）。
+3. **命名：`healthcheck.retries` 改名为 `attempts`（修正误名），step 级修饰符用 `retries`**。**旧键硬切**：`validate` 遇到 `healthcheck.retries` 直接报错并提示改名；yaml 与 JSON 键都改。DB 历史快照需兼容解码（否则旧部署详情页打不开），实施时处理。升级前必须先改 deploy 仓库模板与 `deploy-test/hookploy.yaml`，同步更新 PRD / 部署手册 / `hookploy schema`。
+4. **停滞检测本期不做**，只做固定 timeout。留到有第二次事故数据再评估。
+5. **老 edge 防护：按握手版本门控，直接判失败**。main 派发时若 step 带修饰符而目标 edge 的握手版本低于本次发布版本，该 execution 直接 failed，错误信息明说"edge 版本过旧，请先升级"。宁可显式失败，不静默降级。
+6. **`defaults.ops` 本期不纳入**，先做 per-step；等 3 个以上服务重复写同样的值再加。
+7. `validate` 对 op timeout × (retries+1) > execution timeout **报错**（无 warning 机制）。

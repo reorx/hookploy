@@ -378,7 +378,7 @@ deploy:
 **v0.7.0 升级注意（`healthcheck.retries` 更名为 `attempts`）**：旧键是硬切的——新 main 加载含 `healthcheck: { retries: … }` 的配置直接报错，老 main 也不认识 `attempts`，所以**配置改名与 main 升级必须一起下发**（改完配置后若老 main 先 reload，会失败但保留旧配置继续跑，无害；随后换新 binary 重启即可）。推荐顺序：
 
 1. **先升级全部 edge**：新 edge 能解码老 main 下发的快照（老快照里的 `healthcheck.retries` 会被当作 `attempts` 读），这一步零风险。
-2. 再把配置里的 `retries:` 改成 `attempts:`，与 main 升级一起下发、重启 main。
+2. 再把配置里的 `retries:` 改成 `attempts:`，与 main 升级一起下发、重启 main。下发前**用新 binary** 对改好的配置跑一次 `validate`（老 binary 不认 `attempts`，会报错）。如果部署脚本是"先换 binary、再校验配置"的顺序，校验失败时磁盘上就剩下新 binary 配旧配置，main 下次重启会起不来，所以这次预检不能省。
 3. 最后再给需要的步骤加 `timeout:` / `retries:`。
 
 若沿用"先 main 后 edge"，则在 edge 升级完成前，凡是 `attempts` ≠ 5 或带修饰符的服务，派往老 edge 的部署都会被上述版本门控拒绝。

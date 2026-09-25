@@ -12,9 +12,9 @@ M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现�
 
 op 级 instance 定向已实现（2026-08-10，计划见 `kb/plans/2026-08-10-op-instance-targeting-plan.md`）：deploy 流水线的 step 可加保留键 `on:`（instance 名，单个或列表）限定执行的实例，动机是多节点服务的 migration 只该跑一次。`ops.Step.On` 是**配置期字段，不进 JSON 线格式**——`BuildDeploy` 入队时按 instance 过滤并逐个 marshal 快照，所以 edge / engine / DB / Web UI 全部不感知，看到的就是各节点真实的流水线。失败语义复用既有波次门控（定向到第一波，挂了则后续波次 canceled），scheduler 执行侧零改动。校验在加载期：名字必须是本服务的 instance、过滤后不允许任何 instance 空流水线、`tasks:` 禁用 `on:`（用 `--instance`）。契约未动（`internal/api` / `--json` / pb / edgewire / DB schema），唯一外显变化是 `hookploy schema` 的 step 定义多一个 oneOf 分支。
 
-step 级 `timeout:` / `retries:` 修饰符已实现（2026-09-25，计划见 `kb/plans/2026-09-24-op-timeout-and-retry-plan.md`，**v0.7.0 未发布**）：与 `on:` 不同，它们**进 ops 线格式**（edge 的 engine 负责执行），所以 `edgehub` 派发前按握手版本门控——快照用到修饰符而 edge < `ops.ModifiersSince` 即判 failed，不静默降级。`retries` 只对 `ops.retryable` 白名单开放，并收编了 image.pin / artifact.extract 原有的内置重试循环（默认 2）；`healthcheck.retries` 硬切改名 `attempts`（DB 老快照兼容解码）。
+step 级 `timeout:` / `retries:` 修饰符已实现（2026-09-25，计划见 `kb/plans/2026-09-24-op-timeout-and-retry-plan.md`，v0.7.0 发布）：与 `on:` 不同，它们**进 ops 线格式**（edge 的 engine 负责执行），所以 `edgehub` 派发前按握手版本门控——快照用到修饰符而 edge < `ops.ModifiersSince` 即判 failed，不静默降级。`retries` 只对 `ops.retryable` 白名单开放，并收编了 image.pin / artifact.extract 原有的内置重试循环（默认 2）；`healthcheck.retries` 硬切改名 `attempts`（DB 老快照兼容解码）。
 
-**v0.5.0 已发布并上生产（2026-08-08）**：生产三台对齐 v0.5.0，两台 edge 全部切到 SSE 通路（`kb/notes/2026-08-05-edge-sse-migration-guide.md` 已执行完毕），Telegram 通知启用（main.started 实测送达）。gRPC 通路进入实际弃用观察期。
+**生产现状（2026-09-25）**：三台对齐 v0.7.0（升级顺序因版本而异，v0.7.0 是先 edge 后 main，见部署手册 §4.7），vocalflow-rt 的 `image.pin` 已带 `timeout: 3m` + `retries: 2`；两台 edge 自 v0.5.0（2026-08-08）起走 SSE 通路（`kb/notes/2026-08-05-edge-sse-migration-guide.md` 已执行完毕），Telegram 通知启用。gRPC 通路进入实际弃用观察期。
 
 生产部署、服务迁移等运维事项不在本仓库跟踪（见用户全局 CLAUDE.md 的 DevOps 约定，统一在 deploy 目录管理）。
 

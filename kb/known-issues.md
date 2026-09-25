@@ -7,7 +7,8 @@
 - 现状缓解：v0.7.0 起可在 healthcheck 步骤上加 step 修饰符 `timeout:` 给整段轮询封顶，但单次请求仍无独立超时。
 - 处理方向：每次请求用 `interval` 量级（或独立参数）的 ctx 超时。
 
-## v0.7.0（step timeout/retries）尚未发布、未在生产验证
+## CLI status：edge 版本比 main 新时也标 `(outdated)`
 
-- 记录：2026-09-25（`kb/plans/2026-09-24-op-timeout-and-retry-plan.md` 验收 6）
-- 代码与测试环境真机验证已完成；GitHub release、生产三台升级、deploy 仓库模板里 6 处 `healthcheck … retries:` 改名、vocalflow-rt `image.pin` 加修饰符后的同 digest 手动 deploy 验证都还没做。步骤见 `kb/next-up.md`。
+- 记录：2026-09-25（v0.7.0 生产升级按"先 edge 后 main"执行时看到）
+- `internal/cli/cmd_remote.go` 的判断只看版本是否不等（`s.Version != mainVersion`），不分新旧。edge 先升的窗口里，新 edge 被标成 `v0.7.0 (outdated)`，而部署手册 §7 排障表把这个标记解释为"edge 落后于 main"，会误导人。只影响显示，不影响派发与门控。
+- 处理方向：用 `version.AtLeast` 区分方向，落后标 `(outdated)`，领先标 `(ahead of main)` 或不标；Web UI 服务器清单若有同类标记一并检查。

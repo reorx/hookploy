@@ -10,7 +10,7 @@ tags:
 
 # hookploy：op 级超时 + 重试（拉取卡死不该吃光整条流水线的预算）
 
-**状态：已实现（2026-09-25），验收 1–5 通过；验收 6（发布 v0.7.0 + 生产升级 + 模板接线）待用户拍板后执行**，见 `kb/next-up.md`。实施相对决议的偏差与补充见文末「实施记录」。
+**状态：已完成（2026-09-25）。验收 1–6 全部通过，v0.7.0 已发布并上生产，vocalflow-rt 已接线**。实施相对决议的偏差与补充、生产上线过程见文末「实施记录」与「生产上线」。
 
 ## Context：2026-09-24 vocalflow-rt `dp_1a0d2a67f8ec5336195` 失败
 
@@ -126,3 +126,16 @@ tags:
 8. **契约**：`internal/api` / `--json` DTO / pb / edgewire / DB schema 未动。对外唯一可见变化是 `GET /services/<name>` 的 step 对象：多出可选 `timeout` / `retries`，以及 healthcheck `args.retries` → `args.attempts`（已写进 `docs/json-output.md`，说明 `args` 形状属于 op 词汇表、不在冻结范围）。
 9. **升级顺序建议改为先 edge 后 main**（与既有 SOP 相反，写进部署手册 §4.7）：新 edge 能解码老 main 的快照（老快照 `healthcheck.retries` 被当作 `attempts` 读），零风险；反过来先升 main 的话，生产里 6 处 `healthcheck … retries: 10` 改名为 `attempts: 10` 后 ≠ 5，vocalflow-rt 等派往老 edge 的部署会被门控拒掉，直到 edge 升级完。`healthcheck.retries` 硬切意味着配置改名必须与 main 升级同一次下发（老 main reload 新配置会失败但保留旧配置，无害）。
 10. `defaults.timeout` 是否抬到 15m 未定，留到接线 vocalflow-rt 时一起定（`timeout: 3m` + `retries: 2` 最坏 9m10s，现有 10m 已够）。
+
+## 生产上线（2026-09-25，验收 6）
+
+release：https://github.com/reorx/hookploy/releases/tag/v0.7.0（linux-amd64 sha256 `80ecd1f6…3f83d6`）。deploy 仓库提交 `4846d0f`。按第 9 条的顺序执行，全程无在途部署：
+
+1. **两台 edge 先升**（tc-sg-01 → hh-hk-01，`--tags hookploy-edge`）：各自 1s 内以 `version v0.7.0, transport sse` 重连老 main。老 main 的 status 标 `v0.7.0 (outdated)`：它只判版本是否不等，不分新旧，无害，main 升级后消失。
+2. **预检**：role 里 binary 解压排在模板 `validate` 之前，validate 一旦失败，磁盘上就会留下"新 binary + 旧配置"，main 下次重启起不来。所以先把 v0.7.0 binary 传到 ali 的 /tmp，对 `sed` 改名后的现网配置跑 `validate`：`OK: 3 servers, 8 services`。顺带确认硬切双向生效：老 binary 报 `unknown field "attempts"`，新 binary 报 `"retries" was renamed to "attempts"`。
+3. **模板 6 处 `retries: 10` → `attempts: 10` 与 main 升级同一次下发**（`--tags hookploy`）：三台 v0.7.0，edge 1s 内重连，`validate` OK。老快照兼容解码：三个历史部署详情页（含事故那条 failed 的 `dp_1a0d2a67`）Web UI 均 200，服务页显示 `attempts=10`。
+4. **vocalflow-rt `image.pin` 加 `timeout: 3m` + `retries: 2`** 再下发一次，`GET /services/vocalflow-rt` 返回 `{"op":"image.pin","timeout":"3m0s","retries":2}`。`defaults.timeout` **保持 10m**（第 10 条的悬案就此定下）：9m10s 的上限只在三次全失败时才会用满，那种情况本来就该判失败；卡两次、第三次成功约 6.5m，加上本波其余步骤（正常一波 86s）仍在预算内。
+5. **验证部署 `dp_1a0d6473` succeeded**：三实例共 36s，pin 各约 1.5s（`Image is up to date`），`compose.up` 为 `Running`、无 recreate，smoke 三波 pass；日志里没有 image.pin attempt 行，healthcheck 打出 `attempt 1/10`，证明两台 edge 认的是新键（不是回落默认 5）。Telegram 投递无报错。
+   - **偏差**：next-up 原计划用事故的同一 digest（`4216dc94`），但线上 09-24 晚已前进到 `239f02f1`（`dp_1a0d3eec`），用旧 digest 等于三台回滚一版。而事故 blob 早已在各节点本地，同 digest 也复现不了拉取，于是改用当前线上 digest。
+
+未做：其余镜像 CD 服务（linkmind / condenser / panplayer / breeze / simul / nce-class / life-game）的 `image.pin` 没加修饰符。它们同样暴露于 GHCR 卡死，但都是单实例，按需再加。

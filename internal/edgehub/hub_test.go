@@ -11,6 +11,7 @@ import (
 	"github.com/reorx/hookploy/internal/edgehub"
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
+	"github.com/reorx/hookploy/internal/ops"
 )
 
 // fakeConn is an edge connection with no wire behind it.
@@ -444,5 +445,63 @@ func TestGraceTimerSparesReadoptedExecution(t *testing.T) {
 	h.HandleDone("edge1", "ex_1", true, "", "")
 	if err := <-done; err != nil {
 		t.Fatalf("re-adopted execution should still succeed: %v", err)
+	}
+}
+
+// Behavior: main refuses to hand an edge older than ops.ModifiersSince a
+// snapshot that uses step modifiers — that edge would decode it without
+// complaint and silently run it the old way (a 3m op timeout quietly back to
+// the 10m execution budget). The execution fails at once, naming the version
+// and asking for an upgrade; nothing is sent. Snapshots without modifiers
+// still go to any edge.
+func TestExecuteRefusesModifiersOnOldEdge(t *testing.T) {
+	plain := []ops.Step{{Op: "compose.pull", Args: &ops.ComposePull{}}, {Op: "compose.up", Args: &ops.ComposeUp{}}}
+	timed := []ops.Step{{Op: "compose.up", Args: &ops.ComposeUp{}}, {Op: "compose.pull", Args: &ops.ComposePull{}, Timeout: time.Minute}}
+
+	run := func(edgeVersion string, steps []ops.Step) (error, *fakeConn) {
+		h, reg := newHub(t)
+		_, conn := attach(h, "edge1", edgeVersion)
+		ex, err := reg.Acquire(context.Background(), "edge1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := ex.Execute(context.Background(), engine.Spec{ExecutionID: "ex_1", Steps: steps}, &recordSink{})
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			return err, conn
+		case <-time.After(200 * time.Millisecond):
+			// shipped and now waiting on the edge — settle it
+			h.HandleDone("edge1", "ex_1", true, "", "")
+			return <-done, conn
+		}
+	}
+
+	err, conn := run("v0.6.0", timed)
+	if err == nil {
+		t.Fatal("an old edge must not receive a snapshot with modifiers")
+	}
+	for _, want := range []string{`"edge1"`, "v0.6.0", "op 2 (compose.pull)", ops.ModifiersSince, "upgrade"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if errors.Is(err, executor.ErrUnreachable) {
+		t.Fatal("a too-old edge is a failure, not unreachable")
+	}
+	if len(conn.sentIDs()) != 0 {
+		t.Fatal("nothing may be sent to the old edge")
+	}
+
+	for _, v := range []string{ops.ModifiersSince, "v1.0.0", "dev"} {
+		if err, conn := run(v, timed); err != nil || len(conn.sentIDs()) != 1 {
+			t.Errorf("edge %s should run modifiers: err=%v sent=%v", v, err, conn.sentIDs())
+		}
+	}
+	if err, conn := run("v0.5.0", plain); err != nil || len(conn.sentIDs()) != 1 {
+		t.Errorf("a snapshot without modifiers goes to any edge: err=%v sent=%v", err, conn.sentIDs())
 	}
 }

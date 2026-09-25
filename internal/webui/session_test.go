@@ -37,9 +37,12 @@ services:
       - m-a
       - m-b
     deploy:
-      - compose.pull
+      - compose.pull:
+        timeout: 2m
+        retries: 1
       - compose.up
       - healthcheck: { url: "http://127.0.0.1:1/health" }
+        on: m-a
     tasks:
       backup:
         - run: { argv: [backup.sh] }

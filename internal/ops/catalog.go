@@ -90,11 +90,11 @@ var opDocs = map[string]opDoc{
 		},
 	},
 	"healthcheck": {
-		doc: "按 interval 轮询 HTTP 端点直至返回 expect 状态码，retries 耗尽即失败",
+		doc: "按 interval 轮询 HTTP 端点直至返回 expect 状态码，attempts 次都不成功即失败",
 		fields: map[string]string{
 			"URL":      "被轮询的 HTTP 地址（必填）",
 			"Expect":   "期望的 HTTP 状态码",
-			"Retries":  "最大重试次数",
+			"Attempts": "轮询总次数（含第一次）",
 			"Interval": "两次轮询之间的间隔，Go duration 字符串（如 3s、1m30s）",
 		},
 	},

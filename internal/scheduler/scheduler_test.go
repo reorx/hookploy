@@ -489,3 +489,51 @@ func execError(t *testing.T, h *harness, deployID string) string {
 	}
 	return s
 }
+
+// Behavior (end to end through a rollout): a step whose first attempt hangs
+// is cut off by its own timeout and retried, and the execution succeeds with
+// both attempts in its log; when every attempt fails, the execution fails
+// with the op, the attempt count and each reason, and the next wave is
+// canceled by the usual gating.
+func TestStepRetriesThroughRollout(t *testing.T) {
+	steps := `[{compose.pull: null, timeout: 50ms, retries: 1}, compose.up]`
+
+	h := newHarness(t, false, 0)
+	stuck := h.fake.On("docker", "compose", "pull")
+	stuck.BlockUntilCancel, stuck.Once = true, true
+	d := h.enqueue(service("rt", [][]string{{"m0"}, {"sg0"}}, steps), "")
+	h.waitFinished(d.ID, model.StatusSucceeded)
+	logs, err := h.store.GetDeployLogs(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sys strings.Builder
+	for _, l := range logs {
+		if l.Stream == "system" {
+			sys.WriteString(l.Data)
+		}
+	}
+	for _, want := range []string{"compose.pull attempt 1/2 failed: timed out after 50ms", "compose.pull attempt 2/2"} {
+		if !strings.Contains(sys.String(), want) {
+			t.Errorf("deploy log lacks %q:\n%s", want, sys.String())
+		}
+	}
+
+	h2 := newHarness(t, false, 0)
+	h2.fake.On("docker", "compose", "pull").Returning("", 1)
+	d2 := h2.enqueue(service("rt2", [][]string{{"m0"}, {"sg0"}}, steps), "")
+	h2.waitFinished(d2.ID, model.StatusFailed)
+	execs, _ := h2.store.ListExecutions(d2.ID)
+	byInst := map[string]*model.Execution{}
+	for _, ex := range execs {
+		byInst[ex.Instance] = ex
+	}
+	m0 := byInst["m0"]
+	if m0.Status != model.StatusFailed ||
+		!strings.Contains(m0.Error, "op 1 (compose.pull): failed after 2 attempts: [1/2] docker: exit 1; [2/2] docker: exit 1") {
+		t.Fatalf("wave 1 should fail with the attempts summary: %s %q", m0.Status, m0.Error)
+	}
+	if byInst["sg0"].Status != model.StatusCanceled {
+		t.Fatalf("wave 2 must be canceled, got %s", byInst["sg0"].Status)
+	}
+}

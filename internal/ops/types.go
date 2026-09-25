@@ -4,6 +4,7 @@
 package ops
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -26,8 +27,15 @@ type Step struct {
 	// On restricts the step to the named instances (empty = every instance).
 	// It is config-only: the scheduler resolves it when it builds the
 	// per-instance ops snapshot, so it never reaches the JSON wire format.
-	On   []string
-	Line int // source line in hookploy.yaml; 0 when restored from JSON
+	On []string
+	// Timeout bounds each attempt of the step (0 = only the execution timeout
+	// applies). Unlike On it is on the wire: the engine running the step
+	// enforces it.
+	Timeout time.Duration
+	// Retries is how many times a failed attempt runs again; nil means the
+	// op's default (see Attempts). Only retryable ops may set it.
+	Retries *int
+	Line    int // source line in hookploy.yaml; 0 when restored from JSON
 }
 
 // RunsOn reports whether this step executes on the named instance. It is the
@@ -191,12 +199,34 @@ func (a *EnvWrite) Validate() error {
 	return nil
 }
 
-// Healthcheck polls an HTTP endpoint until healthy or retries exhausted.
+// Healthcheck polls an HTTP endpoint until healthy or attempts exhausted.
 type Healthcheck struct {
 	URL      string         `yaml:"url" json:"url"`
 	Expect   int            `yaml:"expect,omitempty" json:"expect,omitempty"`
-	Retries  int            `yaml:"retries,omitempty" json:"retries,omitempty"`
+	Attempts int            `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 	Interval model.Duration `yaml:"interval,omitempty" json:"interval,omitempty"`
+}
+
+// defaultHealthcheckAttempts is also what engines before ModifiersSince use
+// for every healthcheck of a newer snapshot (they read the old key).
+const defaultHealthcheckAttempts = 5
+
+// UnmarshalJSON also reads "retries", the pre-rename name of attempts, so
+// snapshots stored by older versions still decode (deploy history pages).
+func (a *Healthcheck) UnmarshalJSON(b []byte) error {
+	type plain Healthcheck
+	var v struct {
+		plain
+		LegacyRetries int `json:"retries"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*a = Healthcheck(v.plain)
+	if a.Attempts == 0 {
+		a.Attempts = v.LegacyRetries
+	}
+	return nil
 }
 
 func (a *Healthcheck) Validate() error {
@@ -210,8 +240,8 @@ func (a *Healthcheck) setDefaults() {
 	if a.Expect == 0 {
 		a.Expect = 200
 	}
-	if a.Retries == 0 {
-		a.Retries = 5
+	if a.Attempts == 0 {
+		a.Attempts = defaultHealthcheckAttempts
 	}
 	if a.Interval == 0 {
 		a.Interval = model.Duration(3 * time.Second)

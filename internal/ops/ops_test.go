@@ -158,7 +158,7 @@ func TestParseStepErrors(t *testing.T) {
 		{"- image.extract: { from: /a }", "to"},             // to required
 		{"- run: {}", "argv"},                               // argv required
 		{"- compose.up: [a, b]", "mapping"},                 // args must be a mapping
-		// the only key a step may carry besides the op name is `on`
+		// the only keys a step may carry besides the op name are its modifiers
 		{"- compose.up: {x: 1}\n  extra: {}", `"on"`},
 		{"- compose.up: {}\n  on: [a]\n  extra: {}", `"extra"`},
 		{"- on: [main]", "names no op"},
@@ -183,11 +183,11 @@ func TestParseStepErrors(t *testing.T) {
 	}
 }
 
-// Behavior: healthcheck fills documented defaults (expect 200, retries 5, interval 3s).
+// Behavior: healthcheck fills documented defaults (expect 200, attempts 5, interval 3s).
 func TestHealthcheckDefaults(t *testing.T) {
 	steps := parseSteps(t, `- healthcheck: { url: "http://x/healthz" }`)
 	hc := steps[0].Args.(*Healthcheck)
-	if hc.Expect != 200 || hc.Retries != 5 || time.Duration(hc.Interval) != 3*time.Second {
+	if hc.Expect != 200 || hc.Attempts != 5 || time.Duration(hc.Interval) != 3*time.Second {
 		t.Fatalf("defaults not applied: %+v", hc)
 	}
 }
@@ -198,7 +198,7 @@ func TestStepJSONRoundTrip(t *testing.T) {
 	steps := parseSteps(t, `
 - image.pin
 - env.write: { file: .env, set: { A: "1", B: "two" } }
-- healthcheck: { url: "http://x", retries: 7 }
+- healthcheck: { url: "http://x", attempts: 7 }
 `)
 	b, err := json.Marshal(steps)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestStepJSONRoundTrip(t *testing.T) {
 		t.Fatalf("env.write set lost: %+v", ew)
 	}
 	hc := back[2].Args.(*Healthcheck)
-	if hc.Retries != 7 || hc.Expect != 200 {
+	if hc.Attempts != 7 || hc.Expect != 200 {
 		t.Fatalf("healthcheck lost: %+v", hc)
 	}
 }

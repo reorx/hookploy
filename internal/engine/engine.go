@@ -56,12 +56,6 @@ type Engine struct {
 	HTTP   HTTPDoer
 	// Sleep is the retry/poll delay hook; tests inject a no-op.
 	Sleep func(ctx context.Context, d time.Duration) error
-
-	// PullRetries/PullInterval govern the image.pin digest pull.
-	PullRetries  int
-	PullInterval time.Duration
-	// DownloadRetries governs artifact.extract.
-	DownloadRetries int
 }
 
 type execState struct {
@@ -69,9 +63,9 @@ type execState struct {
 	digest        string
 }
 
-// Execute runs the pipeline, streaming into sink. It stops at the first
-// failing op. The image.pin verification runs right after the last
-// compose.up of the pipeline.
+// Execute runs the pipeline, streaming into sink. It stops at the first op
+// that fails all its attempts. The image.pin verification runs right after
+// the last compose.up of the pipeline.
 func (e *Engine) Execute(ctx context.Context, spec Spec, sink Sink) (Result, error) {
 	res := Result{Digest: spec.Digest}
 	st := &execState{}
@@ -86,7 +80,7 @@ func (e *Engine) Execute(ctx context.Context, spec Spec, sink Sink) (Result, err
 			return res, err
 		}
 		sink.OpStart(i, step.Op)
-		exit, err := e.runStep(ctx, spec, i, step, st, sink)
+		exit, err := e.runAttempts(ctx, spec, i, step, st, sink)
 		sink.OpEnd(i, step.Op, exit, err)
 		if st.digest != "" {
 			res.Digest = st.digest
@@ -201,27 +195,6 @@ func (e *Engine) sleep(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (e *Engine) pullRetries() int {
-	if e.PullRetries > 0 {
-		return e.PullRetries
-	}
-	return 3
-}
-
-func (e *Engine) pullInterval() time.Duration {
-	if e.PullInterval > 0 {
-		return e.PullInterval
-	}
-	return 5 * time.Second
-}
-
-func (e *Engine) downloadRetries() int {
-	if e.DownloadRetries > 0 {
-		return e.DownloadRetries
-	}
-	return 3
 }
 
 // resolveWithin joins rel to base ensuring the result stays inside base.

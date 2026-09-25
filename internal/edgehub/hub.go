@@ -16,6 +16,8 @@ import (
 	"github.com/reorx/hookploy/internal/engine"
 	"github.com/reorx/hookploy/internal/executor"
 	"github.com/reorx/hookploy/internal/model"
+	"github.com/reorx/hookploy/internal/ops"
+	"github.com/reorx/hookploy/internal/version"
 )
 
 // Conn is one live downstream channel to an attached edge. Adapters
@@ -294,6 +296,20 @@ func (h *Hub) HandleDone(server, execID string, ok bool, errMsg, digest string) 
 	}
 }
 
+// checkEdgeVersion refuses a snapshot the edge would silently misrun: an edge
+// older than ops.ModifiersSince decodes step modifiers without complaint and
+// ignores them, so a 3m step timeout would quietly fall back to the whole
+// execution budget. Failing loudly here is what makes upgrading edges before
+// relying on modifiers a hard requirement rather than a hope.
+func checkEdgeVersion(server, edgeVersion string, steps []ops.Step) error {
+	i, needs := ops.NeedsModifierSupport(steps)
+	if !needs || version.AtLeast(edgeVersion, ops.ModifiersSince) {
+		return nil
+	}
+	return fmt.Errorf("edge %q runs hookploy %s, too old for op %d (%s): step timeout/retries need an edge >= %s; upgrade the edge first",
+		server, edgeVersion, i+1, steps[i].Op, ops.ModifiersSince)
+}
+
 // serverExecutor is a server's stable Executor value: it resolves the
 // current connection at dispatch time, so reconnects are invisible to the
 // scheduler.
@@ -315,6 +331,10 @@ func (e *serverExecutor) Execute(ctx context.Context, spec engine.Spec, sink eng
 	if st == nil || st.conn == nil {
 		h.mu.Unlock()
 		return res, fmt.Errorf("%w: %s (edge not attached)", executor.ErrUnreachable, e.server)
+	}
+	if err := checkEdgeVersion(e.server, st.info.Version, spec.Steps); err != nil {
+		h.mu.Unlock()
+		return res, err
 	}
 	st.inflight[spec.ExecutionID] = infl
 	conn := st.conn

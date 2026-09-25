@@ -232,6 +232,7 @@ table.rows tr:hover td { background: #f0f4ff40; }
 }
 .op-name { font-weight: 600; }
 .op-arg { color: var(--muted); font-size: 12px; background: var(--bg); padding: 1px 6px; border-radius: 4px; }
+.op-mod { color: var(--muted); font-size: 12px; border: 1px dashed var(--border); padding: 0 6px; border-radius: 4px; }
 .task-name { margin: 12px 0 6px; font-size: 13px; }
 
 /* ── log window ─────────────────────────────────────── */

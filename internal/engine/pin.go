@@ -11,12 +11,15 @@ var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // imagePin implements the image.pin contract (PRD §4 模式 op 语义):
 //  1. use the rollout digest, or resolve :latest's RepoDigest when absent;
-//  2. docker pull <image>@<digest> with retries;
+//  2. docker pull <image>@<digest>;
 //  3. re-point the local :latest tag at the pinned image;
 //  4. remember the pinned image id for the post-deploy verification.
+//
+// Every step is idempotent, so a failed attempt is simply run again whole
+// (image.pin's default retries, see ops.Step.Attempts).
 func (e *Engine) imagePin(ctx context.Context, spec Spec, idx int, st *execState, sink Sink) (*int, error) {
 	if spec.Image == "" {
-		return nil, fmt.Errorf("image.pin: service has no \"image\" declared")
+		return nil, permanent(fmt.Errorf("image.pin: service has no \"image\" declared"))
 	}
 	digest := spec.Digest
 	if digest == "" {
@@ -36,26 +39,12 @@ func (e *Engine) imagePin(ctx context.Context, spec Spec, idx int, st *execState
 		}
 		digest = d
 	} else if !digestRe.MatchString(digest) {
-		return nil, fmt.Errorf("invalid digest %q", digest)
+		return nil, permanent(fmt.Errorf("invalid digest %q", digest))
 	}
 
 	pinned := spec.Image + "@" + digest
-	var lastExit *int
-	var lastErr error
-	for attempt := 1; attempt <= e.pullRetries(); attempt++ {
-		lastExit, lastErr = e.runCmd(ctx, spec, idx, sink, []string{"docker", "pull", pinned})
-		if lastErr == nil {
-			break
-		}
-		if attempt < e.pullRetries() {
-			sink.Log(idx, "system", fmt.Sprintf("pull attempt %d/%d failed, retrying: %v\n", attempt, e.pullRetries(), lastErr))
-			if err := e.sleep(ctx, e.pullInterval()); err != nil {
-				return lastExit, err
-			}
-		}
-	}
-	if lastErr != nil {
-		return lastExit, fmt.Errorf("pull %s failed after %d attempts: %w", pinned, e.pullRetries(), lastErr)
+	if exit, err := e.runCmd(ctx, spec, idx, sink, []string{"docker", "pull", pinned}); err != nil {
+		return exit, fmt.Errorf("pull %s: %w", pinned, err)
 	}
 
 	id, err := e.runCapture(ctx, spec, idx, sink,

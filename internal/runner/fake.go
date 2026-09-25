@@ -67,6 +67,11 @@ func (f *FakeRunner) Run(ctx context.Context, c Cmd) (int, error) {
 	}
 	f.mu.Unlock()
 
+	// Like ExecRunner, a command started on an expired context is killed
+	// before it can do anything.
+	if err := ctx.Err(); err != nil {
+		return -1, err
+	}
 	if rule == nil {
 		return 0, nil
 	}

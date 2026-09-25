@@ -114,7 +114,9 @@ services:
     image: ghcr.io/reorx/vocalflow-rt
     dir: /opt/apps/vocalflow-rt          # 实例默认 dir，可被实例覆盖
     deploy:                              # 所有实例共用同一条流水线
-      - image.pin
+      - image.pin:
+        timeout: 3m                      # 每次拉取最多 3 分钟，卡住即杀掉重来
+        retries: 2                       # 最多 3 次尝试，总上限 9m10s < 服务 timeout
       - compose.run: { service: api, argv: [alembic, upgrade, head] }
         on: [main]                       # 定向：migration 只在 main node 跑一次
       - compose.up
@@ -180,7 +182,7 @@ services:
 
 ### Op 词汇表（v1）
 
-步骤语法：字符串 = 无参 op（`- compose.pull`），单键 map = 带参 op（`- compose.up: { force_recreate: true }`），再加保留键 `on:` = 限定执行的实例（见下「步骤定向」）。
+步骤语法：字符串 = 无参 op（`- compose.pull`），单键 map = 带参 op（`- compose.up: { force_recreate: true }`），再加保留键修饰符：`on:` = 限定执行的实例（见下「步骤定向」），`timeout:` / `retries:` = 单步超时与重试（见下「步骤超时与重试」）。
 
 | op | 语义 | 参数 |
 |---|---|---|
@@ -194,7 +196,7 @@ services:
 | `compose.restart` | `docker compose restart` | `services: []` |
 | `env.require` | 断言 env 文件中指定 key 已填值，否则失败 | `file`, `keys: []` |
 | `env.write` | 向指定文件写入/更新 KEY=VALUE 行 | `file`, `set: {K: V}` |
-| `healthcheck` | 轮询 HTTP 端点直至健康或次数耗尽 | `url`（必填）, `expect: 200`, `retries: 5`, `interval: 3s` |
+| `healthcheck` | 轮询 HTTP 端点直至健康或次数耗尽 | `url`（必填）, `expect: 200`, `attempts: 5`（轮询总次数，含第一次；v0.7.0 前叫 `retries`）, `interval: 3s` |
 | `run` | 在服务目录下执行一条命令（argv 数组，不经 shell） | `argv: []` |
 
 `run` 是逃生舱：用于 op 词汇表未覆盖的场景（如迁移期兼容现有 deploy.sh）。它依然是**配置定义**的（在 SSOT 里、经 git 审计），不破坏"payload 不能注入命令"的安全属性；但新服务应优先用类型化 op。
@@ -218,12 +220,31 @@ deploy:
 
 失败语义直接落在既有的波次门控上：把 migration 定向到第一波的中心节点，它失败则整次部署 failed、后续波次一台不动（旧版本继续跑）。配套纪律是 expand-contract——迁移必须兼容"旧代码 + 新库"这一中间态，因为波 1 完成后波 2 的旧容器仍在跑。
 
+### 步骤超时与重试（`timeout:` / `retries:`）
+
+execution 级 `timeout` 是整条流水线的总预算。一个卡住不退出的步骤（典型：registry CDN 瞬态卡住，`docker pull` 对停滞的连接没有无进度超时、会无限等）会独吞这份预算，而这类故障换一条新连接往往立刻就好。单步修饰符用来更早止损并自动换连接重来：
+
+```yaml
+deploy:
+  - image.pin:
+    timeout: 3m     # 每次尝试最多 3 分钟，到点杀掉整个进程组
+    retries: 2      # 失败（含超时）后最多再跑 2 次，每次都是全新执行
+  - compose.up
+```
+
+- `timeout`：Go duration，对**所有** op 开放。它限定的是**每一次尝试**；到点取消这一步（进程组 SIGTERM → 5s → SIGKILL），不影响 execution 总超时——后者仍是兜底，语义不变。
+- `retries`：失败后重跑的次数，只对从头再跑必然安全的 op 开放：`image.pin`、`compose.pull`、`artifact.extract`。其他 op 写了即 `validate` 报错（`healthcheck` 自带轮询，调它的 `attempts`）。每次重试间隔固定 5s，不做退避。`image.pin` 与 `artifact.extract` 不写 `retries` 时默认 2（即此前内置的"3 次拉取/下载"，现在统一由修饰符表达，重试的是整个 op）；写 `retries: 0` 关闭。
+- 不会自愈的失败不重试：`artifact.extract` 下载完整但 sha256 不符、服务未声明 `image` 等，第一次就直接失败。
+- 加载期校验：`timeout × 尝试次数 + 5s × 重试次数` 超过服务 `timeout` 即报错（重试承诺了却会被总超时掐断，等于没有）；计算按 op 的默认 retries。
+- 可观测：重试写进该 op 的 system 日志（`image.pin attempt 1/3 failed: timed out after 3m0s; retrying in 5s`，下一行 `image.pin attempt 2/3`）；全部失败时 op 与 execution 的错误为 `op 1 (image.pin): failed after 3 attempts: [1/3] …; [2/3] …; [3/3] …`，失败通知带同一句。只尝试一次的步骤日志与错误和不加修饰符时逐字节一致。
+- 与 `on:` 不同，`timeout`/`retries` 由执行步骤的 engine 负责，因此**进入 ops 快照**（线格式 `{"op": …, "args": …, "timeout": "3m0s", "retries": 2}`）。老 edge（< v0.7.0）会静默忽略它们，所以 main 派发时若快照用到了修饰符（或 `healthcheck.attempts` 不是默认的 5）而目标 edge 的握手版本低于 v0.7.0，该 execution 直接 failed 并提示先升级 edge，绝不静默降级。
+
 ### 模式 op 语义
 
 **`image.pin`**（零参数，验证内置）。前提：服务声明了 `image:`（缺失则 `validate` 报错）。执行契约：
 
 1. 取 `payload.digest`：存在则校验 `sha256:[0-9a-f]{64}` 格式；缺失（手动触发）则 pull `:latest` 并解析其实际 digest，走同一条路径。
-2. `docker pull <image>@<digest>`，3 次重试、间隔 5s（吸收 registry 复制延迟）。
+2. `docker pull <image>@<digest>`。整个 op 默认 3 次尝试、间隔 5s（吸收 registry 复制延迟），次数与单次超时由 `retries:` / `timeout:` 修饰符调整（见「步骤超时与重试」）。
 3. `docker tag` 把**本地** `:latest` 指向锁定镜像——compose 文件保持朴素的 `image: <repo>:latest` 不变，本地 tag 即是 pin，后续任何手动 `compose up` 复用的都是最后一次验证过的部署。
 4. **注册部署后验证**：流水线中最后一个 `compose.up` 结束后，runtime 自动断言至少一个运行容器的 image ID 等于锁定镜像的 ID，不匹配则整次部署 failed。验证不是显式 op——写了 pin 就必然验证，"忘写 verify 导致白 pin"被协议堵死。
 
@@ -231,9 +252,9 @@ deploy:
 
 **`image.extract`**。`docker create` 临时容器 → `docker cp` 抽出 `from` 路径 → `<to>.new` 近原子交换（rm `to.old` → mv `to`→`to.old` → mv `to.new`→`to` → rm `to.old`）→ 删除临时容器。默认作用于服务 `image:` 锁定后的本地 `:latest`；抽取 compose 之外的镜像时显式传 `image:` 参数并配 `pull: true`。
 
-**`artifact.extract`**。下载 `url`（3 次重试）→ `sha256` 校验（**必填**：artifact 来自公网 URL，无校验等于接受任意代码）→ 按扩展名解压（v1 支持 tar.gz / zip）到 `<to>.new` → 近原子交换（与 `image.extract` 共用同一段交换逻辑）。CI 侧约定：构建产物上传到稳定可下载处（GitHub Release asset 或 OSS），payload 携带 url + sha256。
+**`artifact.extract`**。下载 `url`（失败则整个 op 重试，默认 3 次尝试；sha256 不符不重试）→ `sha256` 校验（**必填**：artifact 来自公网 URL，无校验等于接受任意代码）→ 按扩展名解压（v1 支持 tar.gz / zip）到 `<to>.new` → 近原子交换（与 `image.extract` 共用同一段交换逻辑）。CI 侧约定：构建产物上传到稳定可下载处（GitHub Release asset 或 OSS），payload 携带 url + sha256。
 
-**`healthcheck`**。按 `interval` 轮询 `url`，收到 `expect` 状态码即成功，`retries` 耗尽即失败。放在流水线末尾，"部署成功"的定义就从"容器起来了"升级为"服务真的健康"（能捕获起来几秒后 crash-loop 的情况）；多实例场景下，波间门控随之继承这一强度。
+**`healthcheck`**。按 `interval` 轮询 `url`，收到 `expect` 状态码即成功，`attempts` 次都不成功即失败（v0.7.0 起由 `retries` 更名——它一直是总次数，含第一次；旧键加载即报错并提示改名）。放在流水线末尾，"部署成功"的定义就从"容器起来了"升级为"服务真的健康"（能捕获起来几秒后 crash-loop 的情况）；多实例场景下，波间门控随之继承这一强度。
 
 ### 具名任务（tasks）
 
@@ -278,7 +299,7 @@ queued → dispatching → running → succeeded / failed
 - **同一服务严格串行**；不同服务并行。
 - **去重（latest wins）**：某服务已有部署在排队（尚未 running）时，新 webhook 到达 → 旧的标记为 `superseded`，只保留最新一个；已在 running 的部署不中断，跑完后执行队列里最新的那个。连推 N 个 commit 最多执行 2 次部署。
 - **edge 离线**：任务进入 dispatching 后若目标 edge 未连接，在 **30 秒**窗口内等待其重连；窗口耗尽标记 `unreachable` 失败。（部署由 CI 触发，CI 可重跑，不做长时间排队。）
-- **超时**：默认 10 分钟（`defaults.timeout`，服务可覆盖）；超时由 edge 杀掉进程组并上报 failed。
+- **超时**：默认 10 分钟（`defaults.timeout`，服务可覆盖）；超时由 edge 杀掉进程组并上报 failed。单个步骤可再加 `timeout:` / `retries:`（见 §4「步骤超时与重试」），总超时始终兜底。
 - **main 重启恢复**：任务状态落 SQLite；main 重启后 running 状态的任务标记为 failed（executor 已丢失），queued 的任务继续调度。
 
 ### 多实例 rollout 语义

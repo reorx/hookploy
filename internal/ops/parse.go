@@ -8,16 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// OnKey is the reserved step key that restricts an op to some instances.
-// It is not an op name, so it can never collide with the vocabulary.
-const OnKey = "on"
-
 // ParseStep parses one pipeline entry. Three forms:
 //
 //   - compose.pull                      (string = zero-arg op)
 //   - compose.up: { services: [web] }   (single-key map = op with args)
-//   - compose.run: { ... }              (op name + `on:` = op restricted to
-//     on: [main]                         the named instances)
+//   - compose.run: { ... }              (op name + modifiers: `on:` restricts
+//     on: [main]                         the op to the named instances,
+//   - image.pin:                         `timeout:` bounds each attempt,
+//     timeout: 3m                        `retries:` re-runs a failed one)
+//     retries: 2
 func ParseStep(node *yaml.Node) (Step, error) {
 	if node.Kind == yaml.AliasNode {
 		node = node.Alias
@@ -32,30 +31,31 @@ func ParseStep(node *yaml.Node) (Step, error) {
 	}
 }
 
-// parseMapStep handles the map forms: exactly one op name, plus an optional
-// `on:` in either key order.
+// parseMapStep handles the map forms: exactly one op name, plus optional
+// modifiers in any key order.
 func parseMapStep(node *yaml.Node) (Step, error) {
-	var nameNode, argsNode, onNode *yaml.Node
+	var nameNode, argsNode *yaml.Node
+	mods := map[string]*yaml.Node{}
 	for i := 0; i < len(node.Content); i += 2 {
 		key, val := node.Content[i], node.Content[i+1]
-		if key.Value == OnKey {
-			if onNode != nil {
-				return Step{}, fmt.Errorf("line %d: duplicate %q key", key.Line, OnKey)
+		if modifierKeys[key.Value] {
+			if mods[key.Value] != nil {
+				return Step{}, fmt.Errorf("line %d: duplicate %q key", key.Line, key.Value)
 			}
-			onNode = val
+			mods[key.Value] = val
 			continue
 		}
 		if nameNode != nil {
 			return Step{}, fmt.Errorf(
-				"line %d: an op step map takes one op name plus an optional %q, so %q has no place here",
-				key.Line, OnKey, key.Value)
+				"line %d: an op step map takes one op name plus optional modifiers (%s), so %q has no place here",
+				key.Line, modifierList, key.Value)
 		}
 		nameNode, argsNode = key, val
 	}
 	if nameNode == nil {
 		return Step{}, fmt.Errorf("line %d: op step names no op", node.Line)
 	}
-	on, err := parseOn(onNode)
+	on, err := parseOn(mods[OnKey])
 	if err != nil {
 		return Step{}, err
 	}
@@ -64,6 +64,12 @@ func parseMapStep(node *yaml.Node) (Step, error) {
 		return Step{}, err
 	}
 	step.On = on
+	if step.Timeout, err = parseTimeout(mods[TimeoutKey]); err != nil {
+		return Step{}, err
+	}
+	if step.Retries, err = parseRetries(mods[RetriesKey], step.Op); err != nil {
+		return Step{}, err
+	}
 	return step, nil
 }
 
@@ -98,7 +104,7 @@ func parseOn(node *yaml.Node) ([]string, error) {
 
 // isNull reports whether a node is an explicit or implicit YAML null, which
 // is what `- image.pin:` leaves behind when the op takes no args but needs
-// an `on:` next to it.
+// a modifier next to it.
 func isNull(node *yaml.Node) bool {
 	return node.Kind == yaml.ScalarNode && node.Tag == "!!null"
 }
@@ -110,7 +116,7 @@ func newStep(name string, nameNode, argsNode *yaml.Node) (Step, error) {
 	}
 	args := construct()
 	if argsNode != nil && !isNull(argsNode) {
-		if err := decodeStrict(argsNode, args); err != nil {
+		if err := decodeStrict(name, argsNode, args); err != nil {
 			return Step{}, fmt.Errorf("op %s: %w", name, err)
 		}
 	}
@@ -123,9 +129,15 @@ func newStep(name string, nameNode, argsNode *yaml.Node) (Step, error) {
 	return Step{Op: name, Args: args, Line: nameNode.Line}, nil
 }
 
-// decodeStrict decodes a mapping node into out, rejecting unknown keys
-// (yaml.Node.Decode alone is not strict).
-func decodeStrict(node *yaml.Node, out any) error {
+// renamedArgs maps op → old arg key → new key, so a config written against
+// the old name is told what to write instead of just "unknown field".
+var renamedArgs = map[string]map[string]string{
+	"healthcheck": {"retries": "attempts"},
+}
+
+// decodeStrict decodes the args mapping of op into out, rejecting unknown
+// keys (yaml.Node.Decode alone is not strict).
+func decodeStrict(op string, node *yaml.Node, out any) error {
 	if node.Kind == yaml.AliasNode {
 		node = node.Alias
 	}
@@ -135,9 +147,17 @@ func decodeStrict(node *yaml.Node, out any) error {
 	allowed := yamlFieldSet(reflect.TypeOf(out).Elem())
 	for i := 0; i < len(node.Content); i += 2 {
 		key := node.Content[i]
-		if !allowed[key.Value] {
-			return fmt.Errorf("line %d: unknown field %q", key.Line, key.Value)
+		if allowed[key.Value] {
+			continue
 		}
+		if to, ok := renamedArgs[op][key.Value]; ok {
+			return fmt.Errorf("line %d: %q was renamed to %q", key.Line, key.Value, to)
+		}
+		if modifierKeys[key.Value] {
+			return fmt.Errorf("line %d: %q is a step modifier, not an arg: write it next to %s, at the same indentation",
+				key.Line, key.Value, op)
+		}
+		return fmt.Errorf("line %d: unknown field %q", key.Line, key.Value)
 	}
 	return node.Decode(out)
 }

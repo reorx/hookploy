@@ -128,7 +128,7 @@ services:
       - compose.up: { force_recreate: true, services: [web, worker] }
       - compose.exec: { service: web, argv: [ls] }
       - run: { argv: [echo, hi] }
-      - healthcheck: { url: "http://127.0.0.1:1/healthz", expect: 204, retries: 3, interval: 1s }
+      - healthcheck: { url: "http://127.0.0.1:1/healthz", expect: 204, attempts: 3, interval: 1s }
     tasks:
       db-push:
         - compose.exec: { service: web, argv: [pnpm, "db:push"] }
@@ -147,6 +147,34 @@ services:
       - compose.up:
         on: [main, edge]
       - compose.up
+    instances:
+      main: { server: s1 }
+      edge: { server: s2 }
+`,
+		"steps with timeout and retries": minimalServers + `
+services:
+  app:
+    dir: /opt/a
+    image: ghcr.io/x/a
+    deploy:
+      - image.pin:
+        timeout: 3m
+        retries: 2
+      - compose.pull: { services: [web] }
+        timeout: 90s
+        retries: 0
+      - artifact.extract: { url: u, sha256: s, to: dist }
+        retries: 1
+      - retries: 1
+        on: main
+        compose.pull:
+      - compose.run: { service: web, argv: [migrate] }
+        on: [main]
+        timeout: 2m
+      - compose.up:
+        timeout: 1m
+      - healthcheck: { url: "http://127.0.0.1:1/" }
+        timeout: 1m
     instances:
       main: { server: s1 }
       edge: { server: s2 }
@@ -248,7 +276,7 @@ services:
       - compose.up: {}
         compose.pull: {}
         on: [x]
-`, "maxProperties: got 3, want 2"},
+`, "step/oneOf/2/oneOf]: 'oneOf' failed, subschemas"},
 		{"on is a map", minimalServers + `
 services:
   a:
@@ -330,6 +358,56 @@ services:
 services:
   a: { server: s1, dir: /a, deploy: compose.up }
 `, "deploy/type]: got string, want array"},
+		{"retries on a side-effecting op", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.run: { service: web, argv: [migrate] }
+        retries: 1
+`, fmt.Sprintf("step/oneOf/2/oneOf/%d]: 'not' failed", catalogIndex(t, "compose.run"))},
+		{"modifiers without an op", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - timeout: 1m
+        retries: 1
+`, "step/oneOf/2/oneOf]: 'oneOf' failed, none matched"},
+		{"two ops next to a modifier", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.up:
+        compose.pull:
+        timeout: 1m
+`, "step/oneOf/2/oneOf]: 'oneOf' failed, subschemas"},
+		{"negative retries", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.pull:
+        retries: -1
+`, "minimum"},
+		{"timeout is not a duration string", minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    deploy:
+      - compose.pull:
+        timeout: 30
+`, "duration/type]: got number, want string"},
+		{"healthcheck retries arg was renamed", minimalServers + `
+services:
+  a: { server: s1, dir: /a, deploy: [{ healthcheck: { url: x, retries: 5 } }] }
+`, "additional properties 'retries' not allowed"},
 		{"unknown instance field", minimalServers + `
 services:
   a:
@@ -355,6 +433,19 @@ services:
 			}
 		})
 	}
+}
+
+// catalogIndex locates an op's one-op-name branch inside the modifier form,
+// which follows catalog order.
+func catalogIndex(t *testing.T, op string) int {
+	t.Helper()
+	for i, info := range ops.Catalog() {
+		if info.Name == op {
+			return i
+		}
+	}
+	t.Fatalf("op %q not in the catalog", op)
+	return -1
 }
 
 // Behavior (sync guard): the schema is a permissive upper bound — anything
@@ -393,12 +484,20 @@ services:
 }
 
 // Behavior: the schema knows the whole op vocabulary — every registered op
-// is a key of the map form, and the bare-string form lists exactly the ops
-// whose zero-value Args validate.
+// is a key of the map form and of the modifier form, the bare-string form
+// lists exactly the ops whose zero-value Args validate, and the modifier
+// form's one-op-name branches forbid retries on exactly the ops the loader
+// refuses to retry.
 func TestSchemaOpCoverage(t *testing.T) {
 	raw, err := JSONSchema()
 	if err != nil {
 		t.Fatal(err)
+	}
+	type opBranch struct {
+		Required []string `json:"required"`
+		Not      *struct {
+			Required []string `json:"required"`
+		} `json:"not"`
 	}
 	var doc struct {
 		Definitions struct {
@@ -407,6 +506,7 @@ func TestSchemaOpCoverage(t *testing.T) {
 					Type       string         `json:"type"`
 					Enum       []string       `json:"enum"`
 					Properties map[string]any `json:"properties"`
+					OneOf      []opBranch     `json:"oneOf"`
 				} `json:"oneOf"`
 			} `json:"step"`
 		} `json:"definitions"`
@@ -415,36 +515,57 @@ func TestSchemaOpCoverage(t *testing.T) {
 		t.Fatalf("unmarshal generated schema: %v", err)
 	}
 	var enum []string
-	var props, targeted map[string]any
+	var props, modified map[string]any
+	var opBranches []opBranch
 	for _, branch := range doc.Definitions.Step.OneOf {
 		if len(branch.Enum) > 0 {
 			enum = branch.Enum
 		}
 		if _, ok := branch.Properties[ops.OnKey]; ok {
-			targeted = branch.Properties
+			modified = branch.Properties
+			opBranches = branch.OneOf
 			continue
 		}
 		if len(branch.Properties) > 0 {
 			props = branch.Properties
 		}
 	}
-	if props == nil || targeted == nil || enum == nil {
-		t.Fatalf("step definition missing its string/map/on branches:\n%s", raw)
+	if props == nil || modified == nil || enum == nil {
+		t.Fatalf("step definition missing its string/map/modifier branches:\n%s", raw)
 	}
 
 	for _, info := range ops.Catalog() {
 		if _, ok := props[info.Name]; !ok {
 			t.Errorf("op %q missing from the step map branch", info.Name)
 		}
-		if _, ok := targeted[info.Name]; !ok {
-			t.Errorf("op %q missing from the on branch — every op can be targeted", info.Name)
+		if _, ok := modified[info.Name]; !ok {
+			t.Errorf("op %q missing from the modifier branch — every op takes modifiers", info.Name)
 		}
 	}
 	if len(props) != len(ops.Catalog()) {
 		t.Errorf("step map branch has %d ops, catalog has %d", len(props), len(ops.Catalog()))
 	}
-	if len(targeted) != len(ops.Catalog())+1 {
-		t.Errorf("on branch has %d keys, want the catalog (%d) plus %q", len(targeted), len(ops.Catalog()), ops.OnKey)
+	for _, key := range []string{ops.OnKey, ops.TimeoutKey, ops.RetriesKey} {
+		if _, ok := modified[key]; !ok {
+			t.Errorf("modifier branch lacks %q", key)
+		}
+	}
+	if len(modified) != len(ops.Catalog())+3 {
+		t.Errorf("modifier branch has %d keys, want the catalog (%d) plus 3 modifiers", len(modified), len(ops.Catalog()))
+	}
+
+	if len(opBranches) != len(ops.Catalog()) {
+		t.Fatalf("modifier branch has %d one-op-name branches, catalog has %d", len(opBranches), len(ops.Catalog()))
+	}
+	for _, b := range opBranches {
+		if len(b.Required) != 1 {
+			t.Fatalf("one-op-name branch must require exactly the op: %+v", b)
+		}
+		op := b.Required[0]
+		forbids := b.Not != nil && len(b.Not.Required) == 1 && b.Not.Required[0] == ops.RetriesKey
+		if forbids == ops.Retryable(op) {
+			t.Errorf("op %q: schema forbids retries = %v, loader allows retries = %v", op, forbids, ops.Retryable(op))
+		}
 	}
 
 	var wantEnum []string

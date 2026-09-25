@@ -227,6 +227,12 @@ func TestServicePage(t *testing.T) {
 	if strings.Index(body, "compose.pull") > strings.Index(body, "healthcheck") {
 		t.Fatal("pipeline steps out of order")
 	}
+	// step modifiers rendered next to their op
+	for _, want := range []string{"timeout 2m0s", "retries 1", "on m-a"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("pipeline missing modifier %q", want)
+		}
+	}
 	// tasks
 	for _, want := range []string{"backup", "backup.sh"} {
 		if !strings.Contains(body, want) {

@@ -396,3 +396,124 @@ services:
 		t.Fatalf("want white-pin error for task, got: %v", err)
 	}
 }
+
+// Behavior: step modifiers load onto the parsed pipeline, in deploy and in
+// tasks alike.
+func TestStepModifiersLoad(t *testing.T) {
+	cfg, err := load(t, minimalServers+`
+services:
+  a:
+    server: s1
+    dir: /a
+    image: ghcr.io/x/a
+    deploy:
+      - image.pin:
+        timeout: 3m
+        retries: 2
+      - compose.up
+    tasks:
+      refresh:
+        - compose.pull:
+          timeout: 1m
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Services["a"]
+	pin := svc.Deploy[0]
+	if pin.Timeout != 3*time.Minute || pin.Attempts() != 3 {
+		t.Fatalf("deploy modifiers lost: timeout=%v attempts=%d", pin.Timeout, pin.Attempts())
+	}
+	if got := svc.Tasks["refresh"][0].Timeout; got != time.Minute {
+		t.Fatalf("task modifiers lost: timeout=%v", got)
+	}
+}
+
+// Behavior: a step whose attempts cannot all fit into the execution timeout
+// is a load error — the retries it promises would be cut off by the
+// execution deadline, which is exactly the failure modifiers exist to avoid.
+// The worst case counts every attempt at its full timeout plus the pauses
+// between them, and uses the op's default retries when the step sets none.
+func TestStepTimeoutBudget(t *testing.T) {
+	svc := func(timeout, steps string) string {
+		return minimalServers + `
+services:
+  a:
+    server: s1
+    dir: /a
+    image: ghcr.io/x/a
+` + timeout + `    deploy:
+` + steps
+	}
+	ok := []struct{ name, yaml string }{
+		{"3 × 3m + pauses fits into the 10m default", svc("", `
+      - image.pin:
+        timeout: 3m
+        retries: 2
+      - compose.up
+`)},
+		{"one attempt of exactly the service timeout", svc("    timeout: 2m\n", `
+      - compose.up:
+        timeout: 2m
+`)},
+		{"a raised service timeout makes room", svc("    timeout: 20m\n", `
+      - image.pin:
+        timeout: 5m
+      - compose.up
+`)},
+		{"retries without timeout are bounded by the execution alone", svc("", `
+      - compose.pull:
+        retries: 50
+      - compose.up
+`)},
+	}
+	for _, c := range ok {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := load(t, c.yaml); err != nil {
+				t.Fatalf("should load: %v", err)
+			}
+		})
+	}
+
+	bad := []struct {
+		name, yaml string
+		wantSubs   []string
+	}{
+		{"default retries count", svc("", `
+      - image.pin:
+        timeout: 5m
+      - compose.up
+`), []string{"line 13", "image.pin", "15m10s", "3 attempts", "10m0s", "defaults to 2"}},
+		{"a single attempt longer than the service", svc("    timeout: 2m\n", `
+      - compose.up:
+        timeout: 3m
+`), []string{"compose.up", "3m0s", "2m0s"}},
+		{"pauses between attempts count", svc("", `
+      - compose.pull:
+        timeout: 5m
+        retries: 1
+      - compose.up
+`), []string{"10m5s"}},
+		{"tasks are checked too", svc("", `
+      - compose.up
+    tasks:
+      refresh:
+        - compose.pull:
+          timeout: 4m
+          retries: 2
+`), []string{"task \"refresh\"", "compose.pull"}},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := load(t, c.yaml)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			for _, sub := range c.wantSubs {
+				if !strings.Contains(err.Error(), sub) {
+					t.Errorf("error %q does not mention %q", err, sub)
+				}
+			}
+		})
+	}
+}

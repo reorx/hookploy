@@ -19,7 +19,7 @@ services:
     deploy:
       - compose.pull
       - compose.up
-      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+      - healthcheck: { url: "http://127.0.0.1:9190/", attempts: 5, interval: 2s }
 
   # 与 echo_server 同目录同容器，但调度到 edge-01（经 gRPC 下发执行）
   echo_edge:
@@ -28,7 +28,7 @@ services:
     deploy:
       - compose.pull
       - compose.up
-      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+      - healthcheck: { url: "http://127.0.0.1:9190/", attempts: 5, interval: 2s }
 
   # Bug B 真机复现：单 wave 三实例。s1 先串行跑（digest 解析位），
   # 然后 s2（慢，~25s 成功）与 f1（秒级失败）并行——f1 失败后 deploy.status
@@ -51,7 +51,7 @@ services:
     deploy:
       - compose.pull
       - compose.up
-      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+      - healthcheck: { url: "http://127.0.0.1:9190/", attempts: 5, interval: 2s }
     instances:
       main: { server: ali-hk-01 }
       edge: { server: edge-01 }
@@ -69,7 +69,7 @@ services:
       - run: { argv: [echo, migrated] }
         on: [main]
       - compose.up
-      - healthcheck: { url: "http://127.0.0.1:9190/", retries: 5, interval: 2s }
+      - healthcheck: { url: "http://127.0.0.1:9190/", attempts: 5, interval: 2s }
     instances:
       main: { server: ali-hk-01 }
       edge: { server: edge-01 }
@@ -84,3 +84,29 @@ services:
     dir: /opt/apps/echo_server
     deploy:
       - run: { argv: ["/bin/sh", "-c", "echo slow-op start; sleep 45; echo slow-op done"] }
+
+  # op 级 timeout + retries 验证（2026-09-25）：两个服务共用 pin_test 目录
+  # （whoami 起在 9191，与 echo_server 同镜像，不引入新镜像）。真机上对测试
+  # 进程派生的 docker pull 发 SIGSTOP 冻住它，观察 op timeout → 杀进程组 →
+  # 5s 后换新进程重试 → 成功；pin_edge 在老 edge 上则应被版本门控直接拒掉
+  pin_local:
+    server: ali-hk-01
+    dir: /opt/apps/hookploy_test/pin_test
+    image: traefik/whoami
+    deploy:
+      - image.pin:
+        timeout: 20s
+        retries: 2
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:9191/", attempts: 5, interval: 2s }
+
+  pin_edge:
+    server: edge-01
+    dir: /opt/apps/hookploy_test/pin_test
+    image: traefik/whoami
+    deploy:
+      - image.pin:
+        timeout: 20s
+        retries: 2
+      - compose.up
+      - healthcheck: { url: "http://127.0.0.1:9191/", attempts: 5, interval: 2s }

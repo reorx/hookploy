@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/a-h/templ"
@@ -309,11 +310,12 @@ func (s *Server) servicePage(svc *config.Service) (views.ServicePage, error) {
 	return page, nil
 }
 
-// stepViews flattens each op's typed args into sorted k=v pairs for display.
+// stepViews flattens each op's typed args into sorted k=v pairs for display,
+// and lists the modifiers the step sets.
 func stepViews(steps []ops.Step) ([]views.StepView, error) {
 	out := make([]views.StepView, 0, len(steps))
 	for _, st := range steps {
-		sv := views.StepView{Op: st.Op}
+		sv := views.StepView{Op: st.Op, Mods: stepMods(st)}
 		if st.Args != nil {
 			b, err := json.Marshal(st.Args)
 			if err != nil {
@@ -335,6 +337,22 @@ func stepViews(steps []ops.Step) ([]views.StepView, error) {
 		out = append(out, sv)
 	}
 	return out, nil
+}
+
+// stepMods renders the modifiers a step sets explicitly; op defaults (such
+// as image.pin's retries) stay implicit, as they are in hookploy.yaml.
+func stepMods(st ops.Step) []views.KV {
+	var mods []views.KV
+	if len(st.On) > 0 {
+		mods = append(mods, views.KV{K: ops.OnKey, V: strings.Join(st.On, ", ")})
+	}
+	if st.Timeout > 0 {
+		mods = append(mods, views.KV{K: ops.TimeoutKey, V: st.Timeout.String()})
+	}
+	if st.Retries != nil {
+		mods = append(mods, views.KV{K: ops.RetriesKey, V: strconv.Itoa(*st.Retries)})
+	}
+	return mods
 }
 
 func argValue(v any) string {

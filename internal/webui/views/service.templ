@@ -102,6 +102,9 @@ templ pipeline(steps []StepView) {
 				for _, kv := range st.Args {
 					<span class="op-arg mono">{ kv.K + "=" + kv.V }</span>
 				}
+				for _, kv := range st.Mods {
+					<span class="op-mod mono">{ kv.K + " " + kv.V }</span>
+				}
 			</li>
 		}
 	</ol>

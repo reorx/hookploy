@@ -185,7 +185,7 @@ func TestPipelineStopsOnFailure(t *testing.T) {
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// Behavior: with a payload digest, pin pulls image@digest (with retries),
+// Behavior: with a payload digest, pin pulls image@digest,
 // records the pinned image id and re-points the local :latest tag.
 func TestImagePinWithDigest(t *testing.T) {
 	fr := &runner.FakeRunner{}
@@ -237,38 +237,6 @@ func TestImagePinWithoutDigest(t *testing.T) {
 	calls := fr.JoinedCalls()
 	if calls[0] != "docker pull "+img+":latest" {
 		t.Fatalf("first call should pull :latest, got %v", calls)
-	}
-}
-
-// Behavior: the digest pull retries 3 times before giving up.
-func TestImagePinPullRetries(t *testing.T) {
-	fr := &runner.FakeRunner{}
-	img := "img"
-	// first two pulls fail, third succeeds
-	fr.On("docker", "pull", img+"@"+digest).Returning("manifest unknown", 1).Once = true
-	fr.On("docker", "pull", img+"@"+digest).Returning("manifest unknown", 1).Once = true
-	fr.On("docker", "image", "inspect", "--format", "{{.Id}}", img+"@"+digest).Returning("sha256:id\n", 0)
-	fr.On("docker", "compose", "ps", "-q").Returning("c1\n", 0)
-	fr.On("docker", "inspect", "--format", "{{.Image}}").Returning("sha256:id\n", 0)
-	spec := Spec{Dir: t.TempDir(), Image: img, Digest: digest, Steps: steps(t, "[image.pin, compose.up]")}
-	if _, _, err := execute(t, newEngine(fr, nil), spec); err != nil {
-		t.Fatal(err)
-	}
-	pulls := 0
-	for _, c := range fr.JoinedCalls() {
-		if c == "docker pull "+img+"@"+digest {
-			pulls++
-		}
-	}
-	if pulls != 3 {
-		t.Fatalf("want 3 pull attempts, got %d", pulls)
-	}
-
-	// all three fail → op fails
-	fr2 := &runner.FakeRunner{}
-	fr2.On("docker", "pull", img+"@"+digest).Returning("nope", 1)
-	if _, _, err := execute(t, newEngine(fr2, nil), spec); err == nil {
-		t.Fatal("pin must fail after 3 failed pulls")
 	}
 }
 
@@ -435,8 +403,8 @@ func sha256hex(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-// Behavior: artifact.extract downloads (with retries), verifies sha256,
-// unpacks tar.gz and swaps into place.
+// Behavior: artifact.extract downloads, verifies sha256, unpacks tar.gz and
+// swaps into place; a failed download is retried (its default retries).
 func TestArtifactExtract(t *testing.T) {
 	body := tarGz(t, map[string]string{"index.html": "<html>", "assets/app.js": "js"})
 	doer := &fakeDoer{fn: func(req *http.Request, call int) (*http.Response, error) {
@@ -578,7 +546,7 @@ func TestEnvWrite(t *testing.T) {
 // ── healthcheck ────────────────────────────────────────────────────────────
 
 // Behavior: healthcheck polls until the expected status, failing when
-// retries are exhausted.
+// attempts are exhausted.
 func TestHealthcheck(t *testing.T) {
 	doer := &fakeDoer{fn: func(req *http.Request, call int) (*http.Response, error) {
 		if call < 3 {
@@ -587,7 +555,7 @@ func TestHealthcheck(t *testing.T) {
 		return resp(200, "ok"), nil
 	}}
 	e := newEngine(&runner.FakeRunner{}, doer)
-	spec := Spec{Dir: "/tmp", Steps: steps(t, `[{healthcheck: {url: "http://127.0.0.1/healthz", retries: 5}}]`)}
+	spec := Spec{Dir: "/tmp", Steps: steps(t, `[{healthcheck: {url: "http://127.0.0.1/healthz", attempts: 5}}]`)}
 	if _, _, err := execute(t, e, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -597,9 +565,9 @@ func TestHealthcheck(t *testing.T) {
 
 	always502 := &fakeDoer{fn: func(*http.Request, int) (*http.Response, error) { return resp(502, ""), nil }}
 	e2 := newEngine(&runner.FakeRunner{}, always502)
-	spec2 := Spec{Dir: "/tmp", Steps: steps(t, `[{healthcheck: {url: "http://x/h", retries: 4}}]`)}
+	spec2 := Spec{Dir: "/tmp", Steps: steps(t, `[{healthcheck: {url: "http://x/h", attempts: 4}}]`)}
 	if _, _, err := execute(t, e2, spec2); err == nil {
-		t.Fatal("exhausted retries must fail")
+		t.Fatal("exhausted attempts must fail")
 	}
 	if always502.calls != 4 {
 		t.Fatalf("calls = %d, want 4", always502.calls)

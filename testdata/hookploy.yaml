@@ -28,7 +28,9 @@ services:
     image: ghcr.io/reorx/vocalflow-rt
     dir: /opt/apps/vocalflow-rt
     deploy:
-      - image.pin
+      - image.pin:
+        timeout: 3m                    # 每次拉取最多 3 分钟，卡住即杀掉重来
+        retries: 2
       - compose.run: { service: api, argv: [alembic, upgrade, head] }
         on: [main]                     # migration 只在 main node 跑一次
       - compose.up

@@ -1,5 +1,6 @@
 ---
 created: 2026-07-19
+updated: 2026-09-25
 tags:
   - hookploy
   - deployment
@@ -355,6 +356,33 @@ chatsvc:
 3. 应用侧关掉"启动时自动迁移"，改成启动时只检查（如 Django `migrate --check`、Alembic 比对 head）——迁移由流水线负责，应用只负责拒绝在错误的库结构上启动。
 4. 超长迁移（大表回填）不进部署流水线，走 `tasks:` 手动触发，避免把 deploy 超时拖满。
 
+### 4.7 步骤超时与重试（`timeout:` / `retries:`）
+
+execution 级 `timeout`（`defaults.timeout` / 服务 `timeout`）是整条流水线的总预算。registry CDN 偶发的"单个 blob 卡在半截"会让一次 `docker pull` 无限等下去，独吞整份预算，而换条新连接通常几秒就好。给容易卡住的步骤加修饰符，写在 op 名旁边（与 `on:` 同级缩进）：
+
+```yaml
+deploy:
+  - image.pin:
+    timeout: 3m     # 每次尝试最多 3 分钟，到点杀掉进程组
+    retries: 2      # 失败/超时后最多再来 2 次，每次全新执行，间隔 5s
+  - compose.up
+  - healthcheck: { url: "http://127.0.0.1:8080/healthz", attempts: 10 }
+```
+
+- `timeout` 所有 op 都能用；`retries` 只对 `image.pin`、`compose.pull`、`artifact.extract` 开放（从头再跑必然安全），写在别的 op 上 `validate` 报错。`image.pin` / `artifact.extract` 不写 `retries` 时默认 2。
+- `timeout × 尝试次数 + 5s × 重试次数` 必须不超过服务 `timeout`，否则加载期报错。取值参考：127 MB 镜像正常拉取 7–40 秒，`timeout: 3m` + `retries: 2` 最坏 9m10s，落在默认 10m 之内。
+- 修饰符写成 op 参数（缩进进了 op 下面）会被指出来：`"timeout" is a step modifier, not an arg`。
+- 重试过程在部署日志里可见（`image.pin attempt 2/3`），失败时错误带齐每次原因：`failed after 3 attempts: [1/3] timed out after 3m0s; …`。
+- **edge 版本要求**：修饰符由执行步骤的 edge 负责，edge < v0.7.0 会静默忽略它们。main 派发时发现目标 edge 过旧，直接判该 execution failed（`edge "x" runs hookploy v0.6.0, too old for …; upgrade the edge first`），不会悄悄按老语义跑。`healthcheck` 的 `attempts` 不是默认值 5 时同样受此约束。
+
+**v0.7.0 升级注意（`healthcheck.retries` 更名为 `attempts`）**：旧键是硬切的——新 main 加载含 `healthcheck: { retries: … }` 的配置直接报错，老 main 也不认识 `attempts`，所以**配置改名与 main 升级必须一起下发**（改完配置后若老 main 先 reload，会失败但保留旧配置继续跑，无害；随后换新 binary 重启即可）。推荐顺序：
+
+1. **先升级全部 edge**：新 edge 能解码老 main 下发的快照（老快照里的 `healthcheck.retries` 会被当作 `attempts` 读），这一步零风险。
+2. 再把配置里的 `retries:` 改成 `attempts:`，与 main 升级一起下发、重启 main。
+3. 最后再给需要的步骤加 `timeout:` / `retries:`。
+
+若沿用"先 main 后 edge"，则在 edge 升级完成前，凡是 `attempts` ≠ 5 或带修饰符的服务，派往老 edge 的部署都会被上述版本门控拒绝。
+
 ## 5. 日常运维
 
 CLI 远程使用（本地开发机和服务器行为一致）：
@@ -427,11 +455,13 @@ listen:
 | status 里版本标 `(outdated)` | edge binary 落后于 main，按 §2 重新构建分发（先停进程再覆盖，否则 text file busy） |
 | webhook 401/403 | service token 错误或被轮换；`webhook: false` 的服务只接受 CLI 手动触发 |
 | 部署被顶掉（`superseded`） | 正常：同服务排队时 latest-wins，连推 N 个 commit 最多执行 2 次部署 |
+| 部署 `failed`，error 带 "too old for op … upgrade the edge first" | 该服务用了 step 修饰符（或 `healthcheck.attempts` ≠ 5），目标 edge < v0.7.0 会静默忽略它们，main 拒绝派发。升级该 edge（§4.7） |
+| `validate` 报 "healthcheck … "retries" was renamed to "attempts"" | v0.7.0 起 `healthcheck.retries` 更名为 `attempts`（值不变，它本来就是总次数）；改名后下发 |
 
 ## 附：op 词汇表速查
 
 `image.pin`（digest 锁定+内置验证）、`image.extract`（从镜像抽文件近原子交换）、`artifact.extract`（下载+sha256 校验+解压交换）、`compose.pull` / `compose.up` / `compose.run` / `compose.exec` / `compose.restart`、`env.require` / `env.write`、`healthcheck`（轮询 HTTP 直到健康）、`run`（argv 逃生舱，不经 shell）。
 
-任一 step 都可加保留键 `on:`（instance 名，单个或列表）把它限定到部分实例，仅 `deploy` 可用，见 §4.6。
+任一 step 都可加保留键 `on:`（instance 名，单个或列表）把它限定到部分实例，仅 `deploy` 可用，见 §4.6；加 `timeout:`（每次尝试的超时）/ `retries:`（仅 `image.pin` / `compose.pull` / `artifact.extract`）见 §4.7。`healthcheck` 的轮询次数参数是 `attempts`（v0.7.0 前叫 `retries`）。
 
 完整参数见 `docs/PRD.md` §4；机器可读的参数定义在 `hookploy schema` 输出里（op 词汇表演进时 schema 随之更新）。

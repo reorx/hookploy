@@ -30,6 +30,7 @@ type jsonSchema struct {
 
 	Items    *jsonSchema `json:"items,omitempty"`
 	MinItems *int        `json:"minItems,omitempty"`
+	Minimum  *int        `json:"minimum,omitempty"`
 
 	AllOf []*jsonSchema `json:"allOf,omitempty"`
 	OneOf []*jsonSchema `json:"oneOf,omitempty"`
@@ -299,32 +300,43 @@ func serviceSchema() *jsonSchema {
 
 // stepSchema builds the three step forms from the op catalog: a bare string
 // (ops whose zero-value Args validate), a single-key map (op name → args),
-// and that map plus the reserved `on:` key restricting the op to some
-// instances. The `on` form is a branch of its own rather than a second
-// optional key of the map form, so "exactly one op name" stays expressible.
+// and that map plus modifiers (on / timeout / retries). The modifier form is
+// a branch of its own whose nested oneOf holds one `required: [op]` per op, so
+// "exactly one op name" stays expressible however many modifiers are present
+// — and the ops that may not be retried carry a `not: required retries`.
 func stepSchema() *jsonSchema {
 	var zeroArgOps []any
+	var oneOp []*jsonSchema
 	argMaps := map[string]*jsonSchema{}
 	for _, info := range ops.Catalog() {
 		args := opArgsSchema(info)
 		if info.Defaults.Validate() == nil {
 			zeroArgOps = append(zeroArgOps, info.Name)
-			// `- image.pin:` with an empty body is how a no-arg op carries an
-			// `on:`, so its args node has to accept null as well.
+			// `- image.pin:` with an empty body is how a no-arg op carries a
+			// modifier, so its args node has to accept null as well.
 			args = &jsonSchema{
 				Description: info.Doc,
-				OneOf:       []*jsonSchema{args, {Type: "null", Description: "无参形式（配 on: 时用）。"}},
+				OneOf:       []*jsonSchema{args, {Type: "null", Description: "无参形式（配修饰符时用）。"}},
 			}
 		}
 		argMaps[info.Name] = args
+		branch := &jsonSchema{Required: []string{info.Name}}
+		if !ops.Retryable(info.Name) {
+			branch.Not = &jsonSchema{Required: []string{ops.RetriesKey}}
+		}
+		oneOp = append(oneOp, branch)
 	}
 
-	targeted := map[string]*jsonSchema{ops.OnKey: onSchema()}
+	modified := map[string]*jsonSchema{
+		ops.OnKey:      onSchema(),
+		ops.TimeoutKey: timeoutSchema(),
+		ops.RetriesKey: retriesSchema(),
+	}
 	for name, args := range argMaps {
-		targeted[name] = args
+		modified[name] = args
 	}
 	return &jsonSchema{
-		Description: "流水线的一步：字符串 = 无参 op，单键 map = op 名 → 参数，再加 on: 则限定执行的 instance。",
+		Description: "流水线的一步：字符串 = 无参 op，单键 map = op 名 → 参数，再加 on / timeout / retries 修饰符。",
 		OneOf: []*jsonSchema{
 			{
 				Type:        "string",
@@ -341,14 +353,29 @@ func stepSchema() *jsonSchema {
 			},
 			{
 				Type:                 "object",
-				Description:          "定向形式：一个 op 名加上 on。",
-				Properties:           targeted,
-				Required:             []string{ops.OnKey},
+				Description:          "带修饰符的形式：一个 op 名加上 on / timeout / retries 中的一个或多个。",
+				Properties:           modified,
 				AdditionalProperties: false,
 				MinProperties:        intp(2),
-				MaxProperties:        intp(2),
+				OneOf:                oneOp,
 			},
 		},
+	}
+}
+
+// timeoutSchema describes the `timeout:` modifier.
+func timeoutSchema() *jsonSchema {
+	return durationRef("这一步每次尝试的超时，到点即取消（杀掉子进程）；省略则只受服务 timeout 约束。" +
+		"timeout × 尝试次数 + 尝试间隔（5s）不得超过服务 timeout。")
+}
+
+// retriesSchema describes the `retries:` modifier.
+func retriesSchema() *jsonSchema {
+	return &jsonSchema{
+		Type: "integer",
+		Description: "失败（含 timeout）后重跑的次数，每次都是全新执行，间隔 5s。" +
+			"仅 image.pin / compose.pull / artifact.extract 可用；image.pin 与 artifact.extract 省略时默认 2，compose.pull 默认 0。",
+		Minimum: intp(0),
 	}
 }
 

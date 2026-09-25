@@ -12,6 +12,8 @@ M1–M3 全部完成（2026-07-19）；M4 Web UI（`/ui/`，只读）已实现�
 
 op 级 instance 定向已实现（2026-08-10，计划见 `kb/plans/2026-08-10-op-instance-targeting-plan.md`）：deploy 流水线的 step 可加保留键 `on:`（instance 名，单个或列表）限定执行的实例，动机是多节点服务的 migration 只该跑一次。`ops.Step.On` 是**配置期字段，不进 JSON 线格式**——`BuildDeploy` 入队时按 instance 过滤并逐个 marshal 快照，所以 edge / engine / DB / Web UI 全部不感知，看到的就是各节点真实的流水线。失败语义复用既有波次门控（定向到第一波，挂了则后续波次 canceled），scheduler 执行侧零改动。校验在加载期：名字必须是本服务的 instance、过滤后不允许任何 instance 空流水线、`tasks:` 禁用 `on:`（用 `--instance`）。契约未动（`internal/api` / `--json` / pb / edgewire / DB schema），唯一外显变化是 `hookploy schema` 的 step 定义多一个 oneOf 分支。
 
+step 级 `timeout:` / `retries:` 修饰符已实现（2026-09-25，计划见 `kb/plans/2026-09-24-op-timeout-and-retry-plan.md`，**v0.7.0 未发布**）：与 `on:` 不同，它们**进 ops 线格式**（edge 的 engine 负责执行），所以 `edgehub` 派发前按握手版本门控——快照用到修饰符而 edge < `ops.ModifiersSince` 即判 failed，不静默降级。`retries` 只对 `ops.retryable` 白名单开放，并收编了 image.pin / artifact.extract 原有的内置重试循环（默认 2）；`healthcheck.retries` 硬切改名 `attempts`（DB 老快照兼容解码）。
+
 **v0.5.0 已发布并上生产（2026-08-08）**：生产三台对齐 v0.5.0，两台 edge 全部切到 SSE 通路（`kb/notes/2026-08-05-edge-sse-migration-guide.md` 已执行完毕），Telegram 通知启用（main.started 实测送达）。gRPC 通路进入实际弃用观察期。
 
 生产部署、服务迁移等运维事项不在本仓库跟踪（见用户全局 CLAUDE.md 的 DevOps 约定，统一在 deploy 目录管理）。
@@ -27,8 +29,8 @@ op 级 instance 定向已实现（2026-08-10，计划见 `kb/plans/2026-08-10-op
 
 - `internal/model` — 纯域类型（无内部依赖）；含 `EventKind` 通知词汇表与 `EventScope`（config 要校验事件名但不能 import notify，所以词汇表归 model，规则归 notify）；`internal/api` — HTTP/CLI 共用 DTO（已冻结）
 - `internal/config` — yaml 加载/归一化/校验（`server:` 语法糖 → instances+rollout 规范形）；`config.JSONSchema()` 供 `hookploy schema`
-- `internal/ops` — op 词汇表、解析、插值、JSON 线格式（DB 快照与 gRPC 下发共用）
-- `internal/engine` — op 执行引擎（Runner/HTTP/Sleep 全部可注入，测试不碰 docker）；`internal/runner` — argv 执行（不经 shell）
+- `internal/ops` — op 词汇表、解析、插值、JSON 线格式（DB 快照与 gRPC 下发共用）；`modifiers.go` 是 step 修饰符的单一定义处（保留键、`retryable` 白名单与默认 retries、`RetryInterval`、`ModifiersSince`、老 edge 判定 `NeedsModifierSupport`）
+- `internal/engine` — op 执行引擎（Runner/HTTP/Sleep 全部可注入，测试不碰 docker）；`attempts.go` 是唯一的重试层（per-attempt timeout、`permanent()` 标记不重试的失败），op 实现里不要再写自己的重试循环；`internal/runner` — argv 执行（不经 shell）
 - `internal/executor` — Executor 抽象 + Registry（30s acquire 窗口 = 离线重连宽限）
 - `internal/scheduler` — 串行/去重/波次/digest 提升/恢复
 - `internal/edgehub` — **main 侧传输无关核心**：attach/detach 状态、per-server Executor、update 路由、60s 宽限窗口与重连认领。gRPC 与 SSE 两个适配器共用它；`Edges()` 天然是合并视图
@@ -59,11 +61,12 @@ op 级 instance 定向已实现（2026-08-10，计划见 `kb/plans/2026-08-10-op
 ali-hk-01 是 x86_64 主力生产机（SSH 见 `~/.ssh/config`）。测试部署与正式部署**同机共存**，靠路径和端口隔离，临时手动、不进任何配置管理 SSOT。**不得动生产服务与默认端口 9100/9101**（含正式版 hookploy）。
 
 - 测试端口：main HTTP **9180**、main gRPC **9181**、echo_server **9190**
-- `/opt/apps/hookploy_test/` — 测试二进制、`hookploy-ctl.sh`、`hookploy.yaml`、db/pid/log、token dotfiles（0600：`.echo_token`、`.admin_token`、`.server_token`、`.edge_main`）。同目录跑一个 edge 进程（server 名 `edge-01`，走 gRPC 全链路，main URL `http://127.0.0.1:9181`）
+- `/opt/apps/hookploy_test/` — 测试二进制、`hookploy-ctl.sh`、`hookploy.yaml`、db/pid/log、token dotfiles（0600：`.echo_token`、`.admin_token`、`.server_token`、`.edge_main`）。同目录跑一个 edge 进程（server 名 `edge-01`，走 SSE 通路：`.edge_transport` = `sse`，`.edge_main` = `http://127.0.0.1:9180`）
 - `/opt/apps/echo_server/` — 测试服务（`traefik/whoami`，流水线 `compose.pull` → `compose.up` → `healthcheck`）
 - 本地配置源在 `deploy-test/`，改动后 scp 覆盖服务器对应文件；`scripts/hookploy-ctl.sh` 改动同理
+- `deploy-test/freeze-pull.sh <main|edge> [n]`：按 PID 文件对测试进程派生的 `docker pull` 发 SIGSTOP，模拟拉取卡死（验证 step timeout/retries）。别用 iptables / `ss -K` 掐 registry 连接——会波及同机生产 dockerd
 
-构建与上传（上传前先 `stop` + `edge-stop`，否则覆盖运行中二进制报 text file busy）：
+构建与上传（上传前先 `stop` + `edge-stop`，否则覆盖运行中二进制报 text file busy；或传到旁路文件名再 `mv` 原子替换）。`<ver>` 要写成目标版本号（如 `v0.7.0-rc.1`）：版本门控按核心号比较，`v0.6.0-on-test` 这类旧核心号的 edge 会被拒派带修饰符的快照：
 
 ```sh
 go test ./...

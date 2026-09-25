@@ -379,8 +379,10 @@ admin token（subject 固定为 `admin`）：
 | `timeout` | string | Go duration 字符串（如 `10m0s`） | 否 |
 | `instances` | []`api.InstanceInfo` | 部署目标列表 | 否 |
 | `rollout` | [][]string | 波次 × 实例名 | 否 |
-| `deploy` | []object | 部署流水线，每步为 ops 线格式 `{"op": ..., "args": {...}}`（与 DB 快照/gRPC 下发同源） | 否 |
+| `deploy` | []object | 部署流水线，每步为 ops 线格式 `{"op": ..., "args": {...}}`（与 DB 快照/gRPC 下发同源）；带 step 修饰符时多出可选的 `"timeout": "3m0s"` / `"retries": 2`（未设置即省略；`on:` 是配置期字段，不出现在这里） | 否 |
 | `tasks` | map[string][]object | 各 task 流水线，步骤格式同 `deploy` | 是 |
+
+step 对象由 `internal/ops` 的线格式序列化，**`args` 的形状属于 op 词汇表**（随 `hookploy schema` 演进），不在本文的冻结范围内：v0.7.0 起 `healthcheck` 的 `args.retries` 更名为 `args.attempts`（值语义不变，一直是总轮询次数），消费方若读它需同步改名。step 顶层的 `op` / `args` 两个键与新增的可选 `timeout` / `retries` 遵守上面的"只增不改"。
 
 `api.InstanceInfo`：
 

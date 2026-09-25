@@ -72,15 +72,15 @@ func TestCatalogInstancesAreFresh(t *testing.T) {
 	first := Catalog()
 	for _, info := range first {
 		if hc, ok := info.Args.(*Healthcheck); ok {
-			hc.Retries = 999
+			hc.Attempts = 999
 		}
 	}
 	for _, info := range Catalog() {
-		if hc, ok := info.Args.(*Healthcheck); ok && hc.Retries != 0 {
+		if hc, ok := info.Args.(*Healthcheck); ok && hc.Attempts != 0 {
 			t.Fatalf("Catalog() Args instance is shared: %+v", hc)
 		}
 		if hc, ok := info.Defaults.(*Healthcheck); ok {
-			if hc.Expect != 200 || hc.Retries != 5 {
+			if hc.Expect != 200 || hc.Attempts != 5 {
 				t.Fatalf("Defaults not applied: %+v", hc)
 			}
 		}

@@ -14,9 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/reorx/hookploy/internal/ops"
 )
+
+// cleanupTimeout bounds cleanup that must run after the op's own context
+// has expired.
+const cleanupTimeout = 30 * time.Second
 
 // imageExtract: docker create → docker cp <from> → near-atomic swap into
 // <to> → docker rm (always).
@@ -42,7 +47,11 @@ func (e *Engine) imageExtract(ctx context.Context, spec Spec, idx int, a *ops.Im
 		return nil, fmt.Errorf("create temp container: %w", err)
 	}
 	defer func() {
-		if _, rmErr := e.runCmd(ctx, spec, idx, sink, []string{"docker", "rm", "-f", cid}); rmErr != nil {
+		// Not on ctx: when a timeout is what ended the op, ctx has already
+		// expired, and the temp container would be left behind.
+		rmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		if _, rmErr := e.runCmd(rmCtx, spec, idx, sink, []string{"docker", "rm", "-f", cid}); rmErr != nil {
 			sink.Log(idx, "system", fmt.Sprintf("warning: failed to remove temp container %s: %v\n", cid, rmErr))
 		}
 	}()
@@ -62,12 +71,12 @@ func (e *Engine) imageExtract(ctx context.Context, spec Spec, idx int, a *ops.Im
 	return &zero, nil
 }
 
-// artifactExtract: download (retried) → streamed sha256 check → unpack to
-// <to>.new → near-atomic swap.
+// artifactExtract: download → streamed sha256 check → unpack to <to>.new →
+// near-atomic swap.
 func (e *Engine) artifactExtract(ctx context.Context, spec Spec, idx int, a *ops.ArtifactExtract, sink Sink) error {
 	toPath, err := resolveWithin(spec.Dir, a.To)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	tmp, err := os.CreateTemp(spec.Dir, ".artifact-*")
 	if err != nil {
@@ -76,7 +85,7 @@ func (e *Engine) artifactExtract(ctx context.Context, spec Spec, idx int, a *ops
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if err := e.download(ctx, idx, a.URL, tmp, a.SHA256, sink); err != nil {
+	if err := e.download(ctx, a.URL, tmp, a.SHA256); err != nil {
 		return err
 	}
 
@@ -91,7 +100,7 @@ func (e *Engine) artifactExtract(ctx context.Context, spec Spec, idx int, a *ops
 	case "zip":
 		err = unzip(tmp, newPath)
 	default:
-		return fmt.Errorf("artifact.extract: unsupported archive type in %q (want .tar.gz/.tgz/.zip)", a.URL)
+		return permanent(fmt.Errorf("artifact.extract: unsupported archive type in %q (want .tar.gz/.tgz/.zip)", a.URL))
 	}
 	if err != nil {
 		os.RemoveAll(newPath)
@@ -100,55 +109,31 @@ func (e *Engine) artifactExtract(ctx context.Context, spec Spec, idx int, a *ops
 	return swapDir(toPath)
 }
 
-// download fetches url into f (with retries) and verifies its sha256 while
-// streaming.
-func (e *Engine) download(ctx context.Context, idx int, rawURL string, f *os.File, wantSHA string, sink Sink) error {
-	var lastErr error
-	for attempt := 1; attempt <= e.downloadRetries(); attempt++ {
-		lastErr = func() error {
-			if _, err := f.Seek(0, io.SeekStart); err != nil {
-				return err
-			}
-			if err := f.Truncate(0); err != nil {
-				return err
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-			if err != nil {
-				return err
-			}
-			resp, err := e.HTTP.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode > 299 {
-				return fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
-			}
-			h := sha256.New()
-			if _, err := io.Copy(io.MultiWriter(f, h), resp.Body); err != nil {
-				return err
-			}
-			got := hex.EncodeToString(h.Sum(nil))
-			if !strings.EqualFold(got, wantSHA) {
-				return fmt.Errorf("sha256 mismatch: got %s, want %s", got, wantSHA)
-			}
-			return nil
-		}()
-		if lastErr == nil {
-			return nil
-		}
-		// A digest mismatch on a complete download will not fix itself.
-		if strings.Contains(lastErr.Error(), "sha256 mismatch") {
-			return lastErr
-		}
-		if attempt < e.downloadRetries() {
-			sink.Log(idx, "system", fmt.Sprintf("download attempt %d/%d failed, retrying: %v\n", attempt, e.downloadRetries(), lastErr))
-			if err := e.sleep(ctx, e.pullInterval()); err != nil {
-				return err
-			}
-		}
+// download fetches url into f and verifies its sha256 while streaming. A
+// failed download is retried by the step (artifact.extract's default
+// retries); a complete download with the wrong digest will not fix itself.
+func (e *Engine) download(ctx context.Context, rawURL string, f *os.File, wantSHA string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("download failed after %d attempts: %w", e.downloadRetries(), lastErr)
+	resp, err := e.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, h), resp.Body); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, wantSHA) {
+		return permanent(fmt.Errorf("sha256 mismatch: got %s, want %s", got, wantSHA))
+	}
+	return nil
 }
 
 func archiveKind(rawURL string) string {

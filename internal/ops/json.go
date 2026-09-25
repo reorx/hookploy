@@ -3,12 +3,19 @@ package ops
 import (
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/reorx/hookploy/internal/model"
 )
 
-// stepJSON is the wire/DB form of a Step: {"op": "...", "args": {...}}.
+// stepJSON is the wire/DB form of a Step: {"op": "...", "args": {...}} plus
+// the modifiers the engine enforces. All but op are omitted when unset, so a
+// step without modifiers keeps its pre-modifier bytes.
 type stepJSON struct {
-	Op   string          `json:"op"`
-	Args json.RawMessage `json:"args,omitempty"`
+	Op      string          `json:"op"`
+	Args    json.RawMessage `json:"args,omitempty"`
+	Timeout model.Duration  `json:"timeout,omitempty"`
+	Retries *int            `json:"retries,omitempty"`
 }
 
 func (s Step) MarshalJSON() ([]byte, error) {
@@ -22,7 +29,7 @@ func (s Step) MarshalJSON() ([]byte, error) {
 			args = b
 		}
 	}
-	return json.Marshal(stepJSON{Op: s.Op, Args: args})
+	return json.Marshal(stepJSON{Op: s.Op, Args: args, Timeout: model.Duration(s.Timeout), Retries: s.Retries})
 }
 
 func (s *Step) UnmarshalJSON(b []byte) error {
@@ -46,5 +53,6 @@ func (s *Step) UnmarshalJSON(b []byte) error {
 	// On is config-only and never on the wire: a decoded step is one the
 	// scheduler already resolved targeting for, so it runs where it landed.
 	s.Op, s.Args, s.On, s.Line = raw.Op, args, nil, 0
+	s.Timeout, s.Retries = time.Duration(raw.Timeout), raw.Retries
 	return nil
 }

@@ -420,8 +420,9 @@ func normalizeService(name string, rs *rawService, cfg *Config) (*Service, error
 
 // validatePipeline enforces cross-op rules: image.pin needs a service image
 // and a later compose.up (the built-in verification must have a target —
-// a "white pin" is statically impossible), and `on:` must name instances of
-// this service without leaving any of them idle.
+// a "white pin" is statically impossible), `on:` must name instances of
+// this service without leaving any of them idle, and a step's attempts must
+// fit into the execution timeout.
 //
 // The pin rule is checked per instance because `on:` makes the pipeline an
 // instance actually runs a subset of the one written down — a compose.up
@@ -436,6 +437,9 @@ func validatePipeline(svc *Service, steps []ops.Step) error {
 				return fmt.Errorf("line %d: %q references unknown instance %q", s.Line, ops.OnKey, target)
 			}
 		}
+		if err := validateStepBudget(svc, s); err != nil {
+			return err
+		}
 	}
 	for _, inst := range svc.Instances {
 		mine := ops.StepsFor(steps, inst.Name)
@@ -449,6 +453,29 @@ func validatePipeline(svc *Service, steps []ops.Step) error {
 		}
 	}
 	return nil
+}
+
+// validateStepBudget rejects a step whose attempts cannot all run to their
+// timeout within the execution timeout: the retries it promises would be cut
+// off by the execution deadline, which is the failure step modifiers exist to
+// avoid. Steps without a timeout are bounded by the execution alone.
+func validateStepBudget(svc *Service, s ops.Step) error {
+	if s.Timeout == 0 {
+		return nil
+	}
+	n := s.Attempts()
+	worst := time.Duration(n)*s.Timeout + time.Duration(n-1)*ops.RetryInterval
+	if worst <= svc.Timeout {
+		return nil
+	}
+	defaulted := ""
+	if s.Retries == nil && n > 1 {
+		defaulted = fmt.Sprintf(" (%q defaults to %d for %s)", ops.RetriesKey, n-1, s.Op)
+	}
+	return fmt.Errorf(
+		"line %d: %s can take up to %s (timeout %s × %d attempts%s, %s apart), longer than the service timeout %s; "+
+			"lower its timeout or retries, or raise the service timeout",
+		s.Line, s.Op, worst, s.Timeout, n, defaulted, ops.RetryInterval, svc.Timeout)
 }
 
 // validatePin checks that an image.pin has a compose.up after it to verify.

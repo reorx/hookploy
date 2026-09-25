@@ -123,10 +123,12 @@ type InstanceCard struct {
 	Online bool
 }
 
-// StepView is one pipeline step with its args flattened for display.
+// StepView is one pipeline step with its args flattened for display, plus
+// the modifiers (on / timeout / retries) the step sets explicitly.
 type StepView struct {
 	Op   string
 	Args []KV
+	Mods []KV
 }
 
 // KV is one rendered argument.

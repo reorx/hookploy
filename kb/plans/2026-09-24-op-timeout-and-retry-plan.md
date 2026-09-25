@@ -10,7 +10,7 @@ tags:
 
 # hookploy：op 级超时 + 重试（拉取卡死不该吃光整条流水线的预算）
 
-**状态：待实施（诉求已定，2026-09-24 已对照代码 review 并拍板全部开放问题，见文末）**。本文把要解决的问题、期望的行为、边界和已定决议写清楚；具体改哪些包、Step 结构怎么扩，留给实施时展开。
+**状态：已实现（2026-09-25），验收 1–5 通过；验收 6（发布 v0.7.0 + 生产升级 + 模板接线）待用户拍板后执行**，见 `kb/next-up.md`。实施相对决议的偏差与补充见文末「实施记录」。
 
 ## Context：2026-09-24 vocalflow-rt `dp_1a0d2a67f8ec5336195` 失败
 
@@ -104,3 +104,25 @@ tags:
 5. **老 edge 防护：按握手版本门控，直接判失败**。main 派发时若 step 带修饰符而目标 edge 的握手版本低于本次发布版本，该 execution 直接 failed，错误信息明说"edge 版本过旧，请先升级"。宁可显式失败，不静默降级。
 6. **`defaults.ops` 本期不纳入**，先做 per-step；等 3 个以上服务重复写同样的值再加。
 7. `validate` 对 op timeout × (retries+1) > execution timeout **报错**（无 warning 机制）。
+
+## 实施记录（2026-09-25）
+
+`go test ./...` 全绿；真机（ali-hk-01 测试环境 9180，main + edge 走 SSE）验证通过，证据在 `tmp/2026-09-25-op-timeout-retry/`（gitignored）：
+
+- **版本门控**：新 main + 老 edge（v0.6.0-on-test）时，带修饰符的 `pin_edge` 15ms 内 failed：`edge "edge-01" runs hookploy v0.6.0-on-test, too old for op 1 (image.pin): step timeout/retries need an edge >= v0.7.0; upgrade the edge first`，老 edge 日志里没有这次 execution。同时回归：不带修饰符的 `echo_server`（本机）/ `echo_edge`（老 edge，快照里是 `attempts: 5`）照常 succeeded，老 edge 日志 `attempt 1/5`——印证默认值不触发门控。
+- **冻结 → 超时 → 重试 → 成功**（本机 executor 与 edge 各一次）：对测试进程派生的第一次 `docker pull` 发 SIGSTOP。`image.pin attempt 1/3 failed: timed out after 20s; retrying in 5s` → `image.pin attempt 2/3` → succeeded；image.pin 这一步 36s = 20s 超时 + 5s SIGTERM 宽限（STOP 状态收不到 TERM，靠 SIGKILL 回收，被冻进程确认已消失）+ 5s 间隔 + 6s 正常尝试。
+- **重试耗尽**：三次都冻住 → `op 1 (image.pin): failed after 3 attempts: [1/3] timed out after 20s; [2/3] …; [3/3] …`，流水线停在 `compose.up` 之前，旧容器未动。
+- 冻结手段选 SIGSTOP 而不是 plan 写的 `ss -K` / iptables：ali-hk-01 是生产机，掐 dockerd↔registry 的连接会波及同机正式服务的拉取；SIGSTOP 只按 PID 文件作用于测试进程的直接子进程，对 hookploy 而言与"pull 永不返回"等价。脚本收在 `deploy-test/freeze-pull.sh`。
+
+相对决议的偏差与补充：
+
+1. **`artifact.extract` 的内置下载循环一并收编**（决议 1 只点名了 image.pin）。理由同一条：只保留一层重试语义。两者不写 `retries` 时都默认 2（保持此前"3 次"的行为，重试的是整个 op），`retries: 0` 关闭；这张表（白名单 + 默认值）就是 `ops.retryable`。
+2. **不会自愈的失败不重试**：engine 内部 `permanent()` 标记——sha256 不符（保留旧的"下载完整但摘要不对就立即失败"）、服务未声明 image、非法 digest、不支持的压缩包类型、路径越界。
+3. **门控也覆盖 `healthcheck.attempts ≠ 5`**：老 edge 找旧键 `retries` 找不到，会静默用默认 5 次。`attempts` = 5 时老 edge 行为一致，不拦。
+4. **日志格式**：每次重试两行（`… attempt N/M failed: <原因>; retrying in 5s`，间隔后 `… attempt N+1/M`）；第一次尝试不打头行，所以不带修饰符/未触发重试时日志逐字节不变。只尝试一次的步骤错误也保持原样（`op 1 (compose.up): timed out after 30ms`），多次才用 `failed after N attempts: [i/N] …`。执行总超时落在两次尝试的间隔里时，错误保留已发生尝试的原因。
+5. **版本比较**（`version.AtLeast`）：`dev` 视为满足；`vX.Y.Z-后缀`按核心版本号算（`git describe` 形如 `v0.6.0-3-g…` 的构建不被信任带有 v0.7.0 的特性）；解析不了即不满足。
+6. **顺带修复**：`image.extract` 的临时容器清理改用脱离 op ctx 的 30s 上下文——op 超时让"ctx 已过期、`docker rm` 被秒杀、容器泄漏"从罕见变成必然。`runner.FakeRunner` 对已过期 ctx 上启动的命令返回 ctx 错误（与 `ExecRunner` 一致），这个 bug 才测得出来。
+7. **Web UI 服务页**渲染显式写出的修饰符（`on` / `timeout` / `retries`，虚线框标签）——此前 `on:` 在 UI 上也不可见。
+8. **契约**：`internal/api` / `--json` DTO / pb / edgewire / DB schema 未动。对外唯一可见变化是 `GET /services/<name>` 的 step 对象：多出可选 `timeout` / `retries`，以及 healthcheck `args.retries` → `args.attempts`（已写进 `docs/json-output.md`，说明 `args` 形状属于 op 词汇表、不在冻结范围）。
+9. **升级顺序建议改为先 edge 后 main**（与既有 SOP 相反，写进部署手册 §4.7）：新 edge 能解码老 main 的快照（老快照 `healthcheck.retries` 被当作 `attempts` 读），零风险；反过来先升 main 的话，生产里 6 处 `healthcheck … retries: 10` 改名为 `attempts: 10` 后 ≠ 5，vocalflow-rt 等派往老 edge 的部署会被门控拒掉，直到 edge 升级完。`healthcheck.retries` 硬切意味着配置改名必须与 main 升级同一次下发（老 main reload 新配置会失败但保留旧配置，无害）。
+10. `defaults.timeout` 是否抬到 15m 未定，留到接线 vocalflow-rt 时一起定（`timeout: 3m` + `retries: 2` 最坏 9m10s，现有 10m 已够）。

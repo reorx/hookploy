@@ -1,6 +1,6 @@
 ---
 created: 2026-07-19
-updated: 2026-09-25
+updated: 2026-09-28
 tags:
   - hookploy
   - deployment
@@ -41,7 +41,7 @@ make build               # 本机平台调试构建：tmp/hookploy
 make build-linux-amd64   # 仅裸 binary dist/hookploy-linux-amd64
 ```
 
-- 版本号默认取 `git describe --tags --always --dirty`，可 `make dist VERSION=v0.x.y` 覆盖；经 `-ldflags -X ...version.Version=` 烧进 binary。main 和 edge 握手时互报版本，`hookploy status` 会给落后的 edge 标注 `(outdated)`。
+- 版本号默认取 `git describe --tags --always --dirty`，可 `make dist VERSION=v0.x.y` 覆盖；经 `-ldflags -X ...version.Version=` 烧进 binary。main 和 edge 握手时互报版本，`hookploy status` 拿 edge 版本和 main 比较：落后的标 `(outdated)`，领先的标 `(ahead of main)`（先 edge 后 main 升级期间的正常状态），核心号相同但后缀不同、或有一方是 `dev` 这类无法比较先后的，标 `(differs from main)`。main 的版本取自 `local: true` 那台 server，配置里没有 local server 时不做比较、不打标。
 - 发布 tarball 内含 binary + `hookploy-ctl.sh`（无 systemd 场景与手动运维的兜底控制脚本）；`make dist` 同时保留裸 binary `dist/hookploy-<os>-<arch>`，方便装机工具直接上传。
 - 正式 release：push `v*` tag 触发 `.github/workflows/release.yml`，产物与 `make dist` 同形态（tar.gz + checksums.txt），挂到 GitHub Releases；本地 `make dist` 即可复现。
 - main 和 edge 是**同一个 binary**，只是运行子命令不同。
@@ -377,7 +377,7 @@ deploy:
 
 **v0.7.0 升级注意（`healthcheck.retries` 更名为 `attempts`）**：旧键是硬切的——新 main 加载含 `healthcheck: { retries: … }` 的配置直接报错，老 main 也不认识 `attempts`，所以**配置改名与 main 升级必须一起下发**（改完配置后若老 main 先 reload，会失败但保留旧配置继续跑，无害；随后换新 binary 重启即可）。推荐顺序：
 
-1. **先升级全部 edge**：新 edge 能解码老 main 下发的快照（老快照里的 `healthcheck.retries` 会被当作 `attempts` 读），这一步零风险。
+1. **先升级全部 edge**：新 edge 能解码老 main 下发的快照（老快照里的 `healthcheck.retries` 会被当作 `attempts` 读），这一步零风险。这期间 `hookploy status` 会把升好的 edge 标成 `(ahead of main)`，属正常现象（v0.7.0 及更早的 CLI 不分方向，这里会误标成 `(outdated)`）。
 2. 再把配置里的 `retries:` 改成 `attempts:`，与 main 升级一起下发、重启 main。下发前**用新 binary** 对改好的配置跑一次 `validate`（老 binary 不认 `attempts`，会报错）。如果部署脚本是"先换 binary、再校验配置"的顺序，校验失败时磁盘上就剩下新 binary 配旧配置，main 下次重启会起不来，所以这次预检不能省。
 3. 最后再给需要的步骤加 `timeout:` / `retries:`。
 
@@ -453,6 +453,8 @@ listen:
 | 部署 `unreachable` | 目标 edge 离线超 30s 分派窗口，或执行中途 edge 失联超 60s 宽限。main 从未得知结果，edge 恢复后 CI 重跑即可 |
 | 部署 `failed`，error 带 "edge disconnected" / "reconnected without execution" | 执行中途断连且 edge 没能保住该执行（`grpc` 通路一律如此；`sse` 通路则说明 edge 进程重启过）。看 edge 日志确认 |
 | status 里版本标 `(outdated)` | edge binary 落后于 main，按 §2 重新构建分发（先停进程再覆盖，否则 text file busy） |
+| status 里版本标 `(ahead of main)` | edge 比 main 新。按"先 edge 后 main"升级（§4.7）时这是中间状态，升完 main 自然消失；否则说明 main 漏升了 |
+| status 里版本标 `(differs from main)` | 核心号相同但后缀不同（如 `v0.7.0-rc.1` 与 `v0.7.0`、`git describe` 构建），或有一方是 `dev` 构建，无法判断谁新。确认两端是否是有意跑的不同构建 |
 | webhook 401/403 | service token 错误或被轮换；`webhook: false` 的服务只接受 CLI 手动触发 |
 | 部署被顶掉（`superseded`） | 正常：同服务排队时 latest-wins，连推 N 个 commit 最多执行 2 次部署 |
 | 部署 `failed`，error 带 "too old for op … upgrade the edge first" | 该服务用了 step 修饰符（或 `healthcheck.attempts` ≠ 5），目标 edge < v0.7.0 会静默忽略它们，main 拒绝派发。升级该 edge（§4.7） |

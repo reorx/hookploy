@@ -10,6 +10,7 @@ import (
 
 	"github.com/reorx/hookploy/internal/api"
 	"github.com/reorx/hookploy/internal/apiclient"
+	"github.com/reorx/hookploy/internal/version"
 )
 
 // Remote commands talk to main's status API via HOOKPLOY_URL +
@@ -70,8 +71,8 @@ func cmdStatus(ctx *Context, args []string) int {
 		extra := ""
 		if s.Version != "" {
 			extra = "  " + s.Version
-			if !s.Local && mainVersion != "" && s.Version != mainVersion {
-				extra += " (outdated)"
+			if !s.Local {
+				extra += versionMark(s.Version, mainVersion)
 			}
 		}
 		if s.ConnectedAt != nil {
@@ -92,6 +93,24 @@ func cmdStatus(ctx *Context, args []string) int {
 		fmt.Fprintf(ctx.Stdout, "  %-16s %s%s\n", s.Name, last, hook)
 	}
 	return 0
+}
+
+// versionMark flags an edge whose version differs from main's, by direction
+// when the two can be ordered. Edges are upgraded before main when a release
+// needs it, so an edge ahead of main is expected, not something to fix.
+func versionMark(edge, main string) string {
+	if main == "" || edge == main {
+		return ""
+	}
+	c, ok := version.Compare(edge, main)
+	switch {
+	case !ok || c == 0:
+		return " (differs from main)"
+	case c < 0:
+		return " (outdated)"
+	default:
+		return " (ahead of main)"
+	}
 }
 
 func cmdDeploys(ctx *Context, args []string) int {

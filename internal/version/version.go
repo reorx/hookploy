@@ -18,20 +18,32 @@ func AtLeast(v, min string) bool {
 	if v == "dev" {
 		return true
 	}
-	have, ok := parseCore(v)
+	c, ok := Compare(v, min)
+	return ok && c >= 0
+}
+
+// Compare orders a against b by their numeric vX.Y.Z core: -1, 0 or +1.
+// Suffixes are ignored, so two builds of the same core compare equal. ok is
+// false when either side does not parse — including "dev", which Compare
+// leaves unordered, unlike AtLeast.
+func Compare(a, b string) (c int, ok bool) {
+	x, ok := parseCore(a)
 	if !ok {
-		return false
+		return 0, false
 	}
-	want, ok := parseCore(min)
+	y, ok := parseCore(b)
 	if !ok {
-		return false
+		return 0, false
 	}
-	for i := range have {
-		if have[i] != want[i] {
-			return have[i] > want[i]
+	for i := range x {
+		if x[i] != y[i] {
+			if x[i] < y[i] {
+				return -1, true
+			}
+			return 1, true
 		}
 	}
-	return true
+	return 0, true
 }
 
 // parseCore extracts [major, minor, patch] from "v1.2.3" or "1.2.3-suffix".

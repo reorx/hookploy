@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -131,6 +132,90 @@ func TestDeployStatusDeploysJSON(t *testing.T) {
 	code, out, _ = runCLI(t, "deploys", "linkmind")
 	if code != 0 || !strings.Contains(out, "succeeded") {
 		t.Fatalf("deploys text: %q", out)
+	}
+}
+
+// serveStatusAPI stands in for main's admin API with fixed /servers rows, for
+// tests about how `status` renders them.
+func serveStatusAPI(t *testing.T, servers []api.ServerInfo) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /servers", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(servers)
+	})
+	mux.HandleFunc("GET /services", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]api.ServiceSummary{})
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("HOOKPLOY_URL", ts.URL)
+	t.Setenv("HOOKPLOY_ADMIN_TOKEN", "hpa_test")
+}
+
+// statusLine returns the SERVERS line for the named server.
+func statusLine(t *testing.T, out, name string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == name {
+			return line
+		}
+	}
+	t.Fatalf("no status line for %q in:\n%s", name, out)
+	return ""
+}
+
+// Behavior: `status` marks an edge whose version differs from main's (the
+// local server's) by direction: behind is (outdated), ahead is (ahead of
+// main) — the normal state while upgrading edges before main. When the two
+// cannot be ordered (same core with a different suffix, a dev build) the
+// mark says only that they differ. Matching and offline edges carry no mark.
+func TestStatusVersionMarks(t *testing.T) {
+	serveStatusAPI(t, []api.ServerInfo{
+		{Name: "main-01", Local: true, Status: "online", Version: "v0.7.0"},
+		{Name: "e-same", Status: "online", Version: "v0.7.0"},
+		{Name: "e-behind", Status: "online", Version: "v0.6.0"},
+		{Name: "e-ahead", Status: "online", Version: "v0.8.0"},
+		{Name: "e-rc", Status: "online", Version: "v0.7.0-rc.1"},
+		{Name: "e-dev", Status: "online", Version: "dev"},
+		{Name: "e-off", Status: "offline"},
+	})
+	code, out, errOut := runCLI(t, "status")
+	if code != 0 {
+		t.Fatalf("status exit %d: %s", code, errOut)
+	}
+	want := map[string]string{
+		"main-01":  "",
+		"e-same":   "",
+		"e-behind": "(outdated)",
+		"e-ahead":  "(ahead of main)",
+		"e-rc":     "(differs from main)",
+		"e-dev":    "(differs from main)",
+		"e-off":    "",
+	}
+	for name, mark := range want {
+		line := statusLine(t, out, name)
+		if mark == "" && strings.Contains(line, "(") {
+			t.Errorf("%s: want no mark, got %q", name, line)
+		}
+		if mark != "" && !strings.Contains(line, mark) {
+			t.Errorf("%s: want %s, got %q", name, mark, line)
+		}
+	}
+}
+
+// Behavior: with no local server, main's version is unknown and no edge is
+// marked, whatever it runs.
+func TestStatusVersionMarksNeedLocalServer(t *testing.T) {
+	serveStatusAPI(t, []api.ServerInfo{
+		{Name: "e-1", Status: "online", Version: "v0.6.0"},
+		{Name: "e-2", Status: "online", Version: "v0.8.0"},
+	})
+	code, out, errOut := runCLI(t, "status")
+	if code != 0 {
+		t.Fatalf("status exit %d: %s", code, errOut)
+	}
+	if strings.Contains(out, "(") {
+		t.Fatalf("want no version marks without a local server:\n%s", out)
 	}
 }
 

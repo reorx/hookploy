@@ -371,6 +371,7 @@ deploy:
 
 - `timeout` 所有 op 都能用；`retries` 只对 `image.pin`、`compose.pull`、`artifact.extract` 开放（从头再跑必然安全），写在别的 op 上 `validate` 报错。`image.pin` / `artifact.extract` 不写 `retries` 时默认 2。
 - `timeout × 尝试次数 + 5s × 重试次数` 必须不超过服务 `timeout`，否则加载期报错。取值参考：127 MB 镜像正常拉取 7–40 秒，`timeout: 3m` + `retries: 2` 最坏 9m10s，落在默认 10m 之内。
+- **大镜像不用为了拉完整层而放宽 `image.pin` 的 timeout**（前提是 Docker 用的是 containerd 镜像存储，`docker info -f '{{.DriverStatus}}'` 里有 `io.containerd.snapshotter.v1`）。pull 被杀掉时，已下载的部分会留在 containerd 里，下一次尝试从断点续传。实测：拉到 40 MB 时强杀，重拉从 40 MB 接着涨，不从 0 开始。所以慢但一直在动的拉取，每次尝试的进度会累加，整体和不设超时差不多。`timeout` 按"多久还没拉完就当它卡住了"来定即可，400 MB 的层也照用 3m。反过来，续传会从卡住的位置接着请求，CDN 若把某个对象卡在固定位置，5s 后的重试未必绕得开，这一点未验证。传统存储（overlay2 等 graphdriver）下中断后会不会续传也未验证，推测是从头拉；那种环境下 timeout 要按最大层的正常拉取时间留足余量。
 - 修饰符写成 op 参数（缩进进了 op 下面）会被指出来：`"timeout" is a step modifier, not an arg`。
 - 重试过程在部署日志里可见（`image.pin attempt 2/3`），失败时错误带齐每次原因：`failed after 3 attempts: [1/3] timed out after 3m0s; …`。
 - **edge 版本要求**：修饰符由执行步骤的 edge 负责，edge < v0.7.0 会静默忽略它们。main 派发时发现目标 edge 过旧，直接判该 execution failed（`edge "x" runs hookploy v0.6.0, too old for …; upgrade the edge first`），不会悄悄按老语义跑。`healthcheck` 的 `attempts` 不是默认值 5 时同样受此约束。
